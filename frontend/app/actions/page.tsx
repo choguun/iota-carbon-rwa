@@ -1,73 +1,81 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
-import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt, useWatchContractEvent } from 'wagmi';
-import { flareTestnet } from 'wagmi/chains';
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+    useIotaClient,
+    useSignAndExecuteTransaction,
+    useCurrentAccount,
+} from '@iota/dapp-kit';
+import { Transaction } from '@iota/iota-sdk/transactions';
+import type { TransactionDigest, IObjectInfo } from '@iota/sdk'; // Adjust imports if needed
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Loader2, CheckCircle, XCircle, Upload } from "lucide-react";
-import { 
-    USER_ACTIONS_ADDRESS,
-    CARBON_CREDIT_NFT_ADDRESS,
-    USER_ACTIONS_ABI,
-    CLAIM_TRANSPORT_NFT_ABI
-} from '@/config/contracts';
-import { keccak256, toHex, decodeEventLog, type Address, type Hex } from 'viem';
+import { useNetworkVariable } from '@/lib/networkConfig'; // Assuming this exists
 import Confetti from 'react-confetti';
 
-// Constants for action types
+
+// Constants for action types (Using simple strings now)
 const ACTION_TYPE_TEMP = "TEMP_OVER_15_SEOUL";
 const ACTION_TYPE_TRANSPORT = "SUSTAINABLE_TRANSPORT_KM";
-const ACTION_TYPE_TEMP_B32 = keccak256(toHex(ACTION_TYPE_TEMP));
-const ACTION_TYPE_TRANSPORT_B32 = keccak256(toHex(ACTION_TYPE_TRANSPORT));
 
+// API URL (remains the same)
 const ATTESTATION_PROVIDER_API_URL = process.env.NEXT_PUBLIC_ATTESTATION_PROVIDER_URL || 'http://localhost:3001';
 
 interface ActionStatus {
-    lastRecordedTimestamp: number;
+    lastRecordedTimestamp: number; // Still useful UI info
     isVerifying: boolean;
     verifyError: string | null;
     verifySuccessMessage: string | null;
     isClaiming: boolean;
     claimError: string | null;
-    claimSuccessTx: string | null;
+    claimSuccessTx: TransactionDigest | null; // Store IOTA digest
     canClaim: boolean;
-    // --- New state for file handling ---
+    // File handling state (remains the same)
     selectedFile: File | null;
     selectedFileName: string;
     isReadingFile: boolean;
     imagePreviewUrl: string | null;
-    // --- New state for FDC flow ---
-    validationId: string | null; // Store the ID received from the provider
-    pollingIntervalId: NodeJS.Timeout | null; // To manage status polling
-    currentStatus: string | null; // Display current status from provider
-    backendStatus: string | null; // Store the raw status identifier from backend
+    // FDC flow state (remains the same)
+    validationId: string | null;
+    pollingIntervalId: NodeJS.Timeout | null;
+    currentStatus: string | null;
+    backendStatus: string | null; // e.g., 'pending_verification', 'complete', 'failed'
+    // Store verification data needed for claim
+    verificationData: any | null; // Store data from provider needed for the claim tx
 }
 
 export default function ActionsPage() {
-    const { address: userAddress, isConnected } = useAccount();
-    const [showConfetti, setShowConfetti] = useState(false);
+    const account = useCurrentAccount();
+    const client = useIotaClient();
+    const { mutate: signAndExecuteTransaction, isPending: isTxPending } = useSignAndExecuteTransaction();
 
-    // --- State Management for Actions --- 
+    // Config
+    const userActionsPackageId = useNetworkVariable('userActionsPackageId');
+    const nftPackageId = useNetworkVariable('nftPackageId');
+    // Add specific Object IDs if needed for calls (e.g., a shared UserActions object)
+    // const userActionsObjectId = useNetworkVariable('userActionsObjectId');
+
+    const [showConfetti, setShowConfetti] = useState(false);
     const [actionStatuses, setActionStatuses] = useState<{
         [key: string]: ActionStatus
     }>(() => ({
-        [ACTION_TYPE_TEMP]: { 
-            lastRecordedTimestamp: 0, isVerifying: false, verifyError: null, verifySuccessMessage: null, 
+        [ACTION_TYPE_TEMP]: {
+            lastRecordedTimestamp: 0, isVerifying: false, verifyError: null, verifySuccessMessage: null,
             isClaiming: false, claimError: null, claimSuccessTx: null, canClaim: false,
             selectedFile: null, selectedFileName: '', isReadingFile: false, imagePreviewUrl: null,
-            validationId: null, pollingIntervalId: null, currentStatus: null,
-            backendStatus: null
+            validationId: null, pollingIntervalId: null, currentStatus: null, backendStatus: null,
+            verificationData: null, // Initialize verification data
         },
-        [ACTION_TYPE_TRANSPORT]: { 
-            lastRecordedTimestamp: 0, isVerifying: false, verifyError: null, verifySuccessMessage: null, 
+        [ACTION_TYPE_TRANSPORT]: {
+            lastRecordedTimestamp: 0, isVerifying: false, verifyError: null, verifySuccessMessage: null,
             isClaiming: false, claimError: null, claimSuccessTx: null, canClaim: false,
             selectedFile: null, selectedFileName: '', isReadingFile: false, imagePreviewUrl: null,
-            validationId: null, pollingIntervalId: null, currentStatus: null,
-            backendStatus: null
+            validationId: null, pollingIntervalId: null, currentStatus: null, backendStatus: null,
+            verificationData: null, // Initialize verification data
         },
     }));
 
@@ -78,597 +86,526 @@ export default function ActionsPage() {
         }));
     };
 
-    // --- Read Last Action Timestamps (Get refetch function) --- 
-    const { data: lastTempTimestampData, refetch: refetchTempTimestamp } = useReadContract({
-        address: USER_ACTIONS_ADDRESS,
-        abi: USER_ACTIONS_ABI,
-        functionName: 'lastActionTimestamp',
-        args: [userAddress!, ACTION_TYPE_TEMP_B32],
-        query: { enabled: !!userAddress },
-    });
-    const { data: lastTransportTimestampData, refetch: refetchTransportTimestamp } = useReadContract({
-        address: USER_ACTIONS_ADDRESS,
-        abi: USER_ACTIONS_ABI,
-        functionName: 'lastActionTimestamp',
-        args: [userAddress!, ACTION_TYPE_TRANSPORT_B32],
-        query: { enabled: !!userAddress },
-    });
+    // --- Fetch Last Action Timestamps ---
+    const fetchLastActionTimestamp = useCallback(async (actionType: string) => {
+        if (!client || !account?.address || !userActionsPackageId) return;
+
+        console.log(`Fetching last timestamp for ${actionType}...`);
+        try {
+            // --- Replace with actual IOTA contract call ---
+            // Example: Assuming a view function `get_last_action_timestamp(owner: address, action_type: vector<u8>)`
+            // Convert actionType string to bytes if needed by contract (e.g., UTF8)
+            // const actionTypeBytes = new TextEncoder().encode(actionType);
+
+            // const result = await client.callViewFunction({
+            //     packageId: userActionsPackageId,
+            //     module: 'user_actions', // Adjust module name
+            //     function: 'get_last_action_timestamp',
+            //     args: [
+            //         account.address, // Assuming address type is compatible
+            //         Array.from(actionTypeBytes) // Pass bytes as array if needed
+            //     ],
+            //     // typeArguments: []
+            // });
+
+            // // --- Parse result ---
+            // let timestamp = 0;
+            // if (result?.value) { // Adjust based on actual return structure
+            //    try {
+            //      timestamp = Number(result.value); // Assuming it returns a number/string convertible to number
+            //      if (isNaN(timestamp)) timestamp = 0;
+            //    } catch { timestamp = 0; }
+            // }
+            // console.log(`Fetched timestamp for ${actionType}: ${timestamp}`);
+            // updateActionStatus(actionType, { lastRecordedTimestamp: timestamp });
+
+            // Placeholder:
+            console.warn(`fetchLastActionTimestamp: Placeholder for ${actionType}. Returning 0.`);
+             updateActionStatus(actionType, { lastRecordedTimestamp: 0 });
+
+
+        } catch (error: any) {
+            console.error(`Error fetching last timestamp for ${actionType}:`, error);
+            toast.error(`Failed to fetch status for ${actionType}: ${error.message}`);
+            // Optionally update state with error: updateActionStatus(actionType, { verifyError: `Failed to fetch status: ${error.message}` });
+        }
+    }, [client, account?.address, userActionsPackageId]);
+
+    // Fetch timestamps on initial load / account change
+    useEffect(() => {
+        if (client && account?.address) {
+            fetchLastActionTimestamp(ACTION_TYPE_TEMP);
+            fetchLastActionTimestamp(ACTION_TYPE_TRANSPORT);
+        }
+    }, [client, account?.address, fetchLastActionTimestamp]);
 
     // --- Status Polling Logic ---
 
     const stopStatusPolling = useCallback((actionType: string) => {
-        // Use a functional update to safely access the latest state
         setActionStatuses(prev => {
             const status = prev[actionType];
             if (status?.pollingIntervalId) {
                 clearInterval(status.pollingIntervalId);
                 console.log(`Stopped polling for ${actionType}`);
-                // Return the updated state slice
-                return {
-                    ...prev,
-                    [actionType]: { ...status, pollingIntervalId: null }
-                };
+                return { ...prev, [actionType]: { ...status, pollingIntervalId: null } };
             }
-            // Return previous state if no interval found
-            return prev; 
+            return prev;
         });
-    }, []); // No dependencies needed for this pattern
+    }, []);
 
-    const checkStatus = useCallback(async (actionType: string, validationId: string) => {
+     const checkStatus = useCallback(async (actionType: string, validationId: string) => {
         console.log(`Checking status for ${actionType} (${validationId})...`);
         try {
             const response = await fetch(`${ATTESTATION_PROVIDER_API_URL}/api/v1/validation-result/${validationId}`);
-            if (!response.ok) {
-                if (response.status === 404) {
-                    console.log(`Validation record ${validationId} not found yet, continuing poll.`);
-                    updateActionStatus(actionType, { currentStatus: "Provider processing request..." });
-                    return; 
-                }
-                const errorData = await response.json().catch(() => ({}));
-                throw new Error(errorData.error || `Failed to fetch status: ${response.statusText}`);
-            }
-
+             if (!response.ok) {
+                 if (response.status === 404) {
+                     console.log(`Validation record ${validationId} not found yet.`);
+                     updateActionStatus(actionType, { currentStatus: "Provider processing request..." });
+                     return;
+                 }
+                 const errorData = await response.json().catch(() => ({}));
+                 throw new Error(errorData.error || `API Error: ${response.statusText}`);
+             }
             const data = await response.json();
-            console.log(`Received status update for ${validationId}:`, data.status);
+            console.log(`Status for ${validationId}:`, data); // Log the full data
 
             let statusMessage = `Status: ${data.status}`;
-            if (data.errorMessage) {
-                statusMessage += ` - ${data.errorMessage}`;
-            }
-            updateActionStatus(actionType, { 
-                currentStatus: statusMessage, 
-                backendStatus: data.status 
-            });
+             let errorMessage = data.errorMessage || null; // Explicitly handle error message
+
+             if (errorMessage) {
+                 statusMessage += ` - ${errorMessage}`;
+             }
+
+             updateActionStatus(actionType, {
+                 currentStatus: statusMessage,
+                 backendStatus: data.status,
+                 // Store necessary data for claim ONLY when complete
+                 verificationData: data.status === 'complete' ? data.verificationData : null,
+                 verifyError: null // Clear previous errors if we get a valid status update
+             });
+
 
             // Handle final states
             if (data.status === 'complete') {
-                console.log(`Verification complete for ${validationId}. Enabling claim and refetching timestamp.`);
+                console.log(`Verification complete for ${validationId}. Enabling claim.`);
                 updateActionStatus(actionType, {
                     canClaim: true,
-                    verifySuccessMessage: "Verification process complete! Ready to claim.",
+                    verifySuccessMessage: "Verification complete! Ready to claim NFT.",
                     currentStatus: "Complete! Ready to claim.",
-                    verifyError: null,
+                    verifyError: null, // Ensure error is cleared on success
                 });
-                stopStatusPolling(actionType); // Stop polling on success
-
-                // *** EXPLICITLY REFETCH TIMESTAMP ***
-                if (actionType === ACTION_TYPE_TRANSPORT) {
-                    console.log("Refetching transport timestamp...");
-                    await refetchTransportTimestamp(); 
-                } else if (actionType === ACTION_TYPE_TEMP) {
-                    // Add refetch for temp if needed later
-                    // await refetchTempTimestamp(); 
-                }
+                stopStatusPolling(actionType);
+                // Fetch the latest timestamp AFTER verification is complete
+                await fetchLastActionTimestamp(actionType);
             } else if (data.status === 'error_processing' || data.status === 'failed') {
-                 console.error(`Processing error/failure for ${validationId}:`, data.errorMessage);
-                 updateActionStatus(actionType, {
-                     verifyError: `Verification failed: ${data.errorMessage || 'Provider reported failure.'}`,
-                     currentStatus: `Failed: ${data.errorMessage || 'Provider reported failure.'}`,
-                     canClaim: false,
-                 });
-                stopStatusPolling(actionType); 
+                console.error(`Processing error/failure for ${validationId}:`, errorMessage);
+                updateActionStatus(actionType, {
+                    verifyError: `Verification failed: ${errorMessage || 'Provider reported failure.'}`,
+                    currentStatus: `Failed: ${errorMessage || 'Provider reported failure.'}`,
+                    canClaim: false,
+                    verificationData: null, // Clear verification data on failure
+                });
+                stopStatusPolling(actionType);
             }
-            // Keep polling for 'verified' or 'pending_fdc'
+             // Implicitly keep polling for 'pending_verification', 'verified', 'pending_fdc', etc.
 
         } catch (error: any) {
             console.error(`Error checking status for ${validationId}:`, error);
-            updateActionStatus(actionType, { 
+             // Update status with fetch error, clear verification data
+            updateActionStatus(actionType, {
                 verifyError: `Failed to check status: ${error.message}`,
-                currentStatus: `Error checking status: ${error.message}`
-            });
-            stopStatusPolling(actionType); // Stop polling on fetch error
+                currentStatus: `Error checking status: ${error.message}`,
+                 verificationData: null,
+             });
+             stopStatusPolling(actionType); // Stop polling on fetch error
         }
-    // Add refetch functions to dependencies
-    }, [stopStatusPolling, refetchTransportTimestamp, refetchTempTimestamp]); 
+    }, [stopStatusPolling, fetchLastActionTimestamp]); // Add fetchLastActionTimestamp dependency
+
 
     const startStatusPolling = useCallback((actionType: string, validationId: string) => {
-        stopStatusPolling(actionType);
-        console.log(`Starting status polling loop for ${actionType} (${validationId})`);
-        // Don't call checkStatus immediately, let the interval handle the first check
-        // checkStatus(actionType, validationId); 
-
+        stopStatusPolling(actionType); // Ensure no duplicate intervals
+        console.log(`Starting status polling for ${actionType} (${validationId})`);
         const intervalId = setInterval(() => {
-            console.log(`Polling interval fired for ${actionType}, validationId: ${validationId}. Calling checkStatus...`);
-            // Access validationId via functional update in updateActionStatus if needed
-            // For simplicity, assume validationId remains stable during polling here
-             checkStatus(actionType, validationId); 
+            // Need to get latest validationId in case it changes, though unlikely here
+            setActionStatuses(prev => {
+                 const currentValidationId = prev[actionType]?.validationId;
+                 if (currentValidationId) {
+                     checkStatus(actionType, currentValidationId);
+                 } else {
+                     console.warn(`Polling stopped for ${actionType}: validationId missing.`);
+                      clearInterval(intervalId); // Stop if ID somehow got cleared
+                 }
+                return prev; // No state change needed here
+            });
         }, 5000); // Poll every 5 seconds
 
-        updateActionStatus(actionType, { 
+        updateActionStatus(actionType, {
             pollingIntervalId: intervalId,
-            // Set an initial polling status message
-            currentStatus: "Polling provider for status updates..." 
+            currentStatus: "Polling provider for status updates..." // Initial status
         });
-    }, [checkStatus, stopStatusPolling]); // checkStatus now includes refetch dependencies
+    }, [checkStatus, stopStatusPolling]);
 
-    // --- Cleanup polling intervals on unmount ---
+    // Cleanup polling
     useEffect(() => {
         return () => {
-            Object.keys(actionStatuses).forEach(stopStatusPolling);
-        };
-    }, [stopStatusPolling]); 
-
-    // Update state when timestamps are fetched/refetched
-    useEffect(() => {
-        if (lastTempTimestampData !== undefined) {
-            console.log(`Updating Temp Timestamp from hook: ${Number(lastTempTimestampData)}`);
-            updateActionStatus(ACTION_TYPE_TEMP, { lastRecordedTimestamp: Number(lastTempTimestampData) });
-        }
-    }, [lastTempTimestampData]);
-
-    useEffect(() => {
-        if (lastTransportTimestampData !== undefined) {
-             console.log(`Updating Transport Timestamp from hook: ${Number(lastTransportTimestampData)}`);
-            updateActionStatus(ACTION_TYPE_TRANSPORT, { lastRecordedTimestamp: Number(lastTransportTimestampData) });
-        }
-    }, [lastTransportTimestampData]);
-
-    // --- Handle Verification Requests --- 
-    const handleVerify = async (actionType: string) => {
-        if (!userAddress) return;
-
-        updateActionStatus(actionType, { 
-            isVerifying: true, 
-            verifyError: null, 
-            verifySuccessMessage: null, 
-            claimError: null,
-            claimSuccessTx: null, 
-            canClaim: false, 
-            validationId: null, 
-            currentStatus: 'Initiating verification...' 
-        });
-
-        const status = actionStatuses[actionType];
-        let requestBody: any = { userAddress, actionType };
-
-        if (actionType === ACTION_TYPE_TRANSPORT) {
-            if (!status.selectedFile) {
-                 updateActionStatus(actionType, { isVerifying: false, verifyError: "Please select a screenshot file first." });
-                 return;
-            }
-            updateActionStatus(actionType, { isReadingFile: true });
-            try {
-                const base64String = await readFileAsBase64(status.selectedFile);
-                requestBody.imageBase64 = base64String; 
-            } catch (error) {
-                console.error("Error reading file:", error);
-                updateActionStatus(actionType, { isVerifying: false, isReadingFile: false, verifyError: "Failed to read the selected file." });
-                return;
-            } finally {
-                 updateActionStatus(actionType, { isReadingFile: false });
-            }
-        }
-
-        try {
-            console.log("Sending verification request to Attestation Provider...");
-            const response = await fetch(`${ATTESTATION_PROVIDER_API_URL}/request-attestation`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(requestBody)
-            });
-
-            const data = await response.json();
-            if (!response.ok) throw new Error(data.error || `Verification request failed: ${response.statusText}`);
-            if (!data.validationId) throw new Error("Attestation provider did not return a validation ID.");
-            
-            console.log("Verification initiated response:", data);
-            updateActionStatus(actionType, { 
-                validationId: data.validationId,
-                currentStatus: "Verification initiated. Waiting for FDC processing...", 
-                verifySuccessMessage: null, 
-                verifyError: null 
-            });
-            startStatusPolling(actionType, data.validationId); 
-            
-        } catch (error: any) {
-             console.error("Verification error:", error);
-             stopStatusPolling(actionType); 
-             updateActionStatus(actionType, { verifyError: error.message || "An unknown error occurred during verification." });
-        } finally {
-            updateActionStatus(actionType, { isVerifying: false });
-        }
-    };
-
-    // --- Listen for ActionRecorded Event --- 
-    useWatchContractEvent({
-        address: USER_ACTIONS_ADDRESS,
-        abi: USER_ACTIONS_ABI,
-        eventName: 'ActionRecorded',
-        onLogs(logs) {
-            console.log('ActionRecorded event logs received:', logs);
-            logs.forEach(log => {
-                try {
-                    const decodedLog = decodeEventLog({
-                        abi: USER_ACTIONS_ABI, data: log.data, topics: log.topics, eventName: 'ActionRecorded'
-                    });
-
-                    if (!decodedLog.args || typeof decodedLog.args !== 'object' || Array.isArray(decodedLog.args) ||
-                        !('user' in decodedLog.args) || !('actionType' in decodedLog.args) || !('timestamp' in decodedLog.args)) {
-                        console.error("Decoded log args invalid:", decodedLog.args); return; 
-                    }
-                    
-                    const { user, actionType: eventActionTypeB32, timestamp } = decodedLog.args as { user: Address, actionType: Hex, timestamp: bigint };
-                                        
-                    if (user === userAddress) {
-                         const actionType = Object.keys(actionStatuses).find(key => 
-                            (key === ACTION_TYPE_TEMP && eventActionTypeB32 === ACTION_TYPE_TEMP_B32) ||
-                            (key === ACTION_TYPE_TRANSPORT && eventActionTypeB32 === ACTION_TYPE_TRANSPORT_B32)
-                        );
-
-                        if (actionType) {
-                            console.log(`ActionRecorded event detected for ${actionType}, user ${user}. Updating timestamp: ${Number(timestamp)}`);
-                            updateActionStatus(actionType, {
-                                lastRecordedTimestamp: Number(timestamp),
-                                // Maybe update canClaim here too as a fallback? 
-                                // canClaim: true, 
-                                // verifySuccessMessage: `Action successfully recorded via event listener!` // Optional message
-                            });
-                            // Don't necessarily stop polling here, let checkStatus confirm 'complete' from provider
-                        }
-                    }
-                } catch (error) {
-                    console.error("Failed to decode ActionRecorded event log:", error, log);
+            Object.keys(actionStatuses).forEach(actionType => {
+                const intervalId = actionStatuses[actionType]?.pollingIntervalId;
+                if (intervalId) {
+                    clearInterval(intervalId);
                 }
             });
-        },
-        onError(error) {
-            console.error('Error watching ActionRecorded event:', error);
-        }
-    });
+        };
+    }, [actionStatuses]); // Rerun if actionStatuses object reference changes (might be frequent) - consider optimizing dependencies if needed
 
-    // --- Handle NFT Claiming --- 
-    const { data: claimTempHash, writeContractAsync: claimTempNFTAsync, isPending: isClaimingTemp } = useWriteContract();
-    const { data: claimTransportHash, writeContractAsync: claimTransportNFTAsync, isPending: isClaimingTransport } = useWriteContract();
 
-    const handleClaim = async (actionType: string) => {
-        if (!userAddress) return;
-        updateActionStatus(actionType, { isClaiming: true, claimError: null, claimSuccessTx: null });
-
-        let claimFunctionName: 'claimTemperatureNFT' | 'claimTransportNFT';
-        let writeAsyncFunction: typeof claimTempNFTAsync | typeof claimTransportNFTAsync;
-        let abiToUse: typeof USER_ACTIONS_ABI | typeof CLAIM_TRANSPORT_NFT_ABI;
-        
-        if (actionType === ACTION_TYPE_TEMP) {
-            claimFunctionName = 'claimTemperatureNFT';
-            writeAsyncFunction = claimTempNFTAsync;
-            abiToUse = USER_ACTIONS_ABI; // Assume full ABI needed? Needs verification
-            console.warn("Claiming Temp NFT requires the full CarbonCreditNFT ABI - ensure CLAIM_TRANSPORT_NFT_ABI is appropriate or update it.");
-             updateActionStatus(actionType, { claimError: "Temp claim ABI needs confirmation.", isClaiming: false });
-             return; // Temporarily disable temp claim until ABI is confirmed
-        } else if (actionType === ACTION_TYPE_TRANSPORT) {
-            claimFunctionName = 'claimTransportNFT';
-             writeAsyncFunction = claimTransportNFTAsync;
-             abiToUse = CLAIM_TRANSPORT_NFT_ABI; // Use specific ABI for transport claim
-        } else {
-            updateActionStatus(actionType, { claimError: "Invalid action type for claiming", isClaiming: false });
-            return;
-        }
-
-        try {
-            const hash = await writeAsyncFunction({
-                address: CARBON_CREDIT_NFT_ADDRESS,
-                abi: abiToUse,
-                functionName: claimFunctionName,
-                args: [] // Assuming no args needed for claim functions
-            });
-            console.log(`Claim transaction sent for ${actionType}:`, hash);
-            updateActionStatus(actionType, { claimSuccessTx: hash });
-        } catch (error: any) {
-            console.error(`Claim error for ${actionType}:`, error);
-            const shortMessage = error.shortMessage || error.message || "Claiming failed.";
-            updateActionStatus(actionType, { claimError: shortMessage, isClaiming: false });
-            toast.error("Claim Error ", { description: shortMessage });
-        } 
-    };
-
-    // --- Monitor Claim Transaction Results --- 
-    const { isLoading: isConfirmingTemp, isSuccess: isConfirmedTemp, isError: isConfirmErrorTemp } = useWaitForTransactionReceipt({ hash: claimTempHash });
-    const { isLoading: isConfirmingTransport, isSuccess: isConfirmedTransport, isError: isConfirmErrorTransport } = useWaitForTransactionReceipt({ hash: claimTransportHash });
-    
-    // Temp Claim Confirmation Effect
-    useEffect(() => {
-        if (isConfirmingTemp) updateActionStatus(ACTION_TYPE_TEMP, { isClaiming: true });
-        if (isConfirmedTemp) {
-             updateActionStatus(ACTION_TYPE_TEMP, { isClaiming: false, canClaim: false, claimError: null, verifySuccessMessage: null });
-             setShowConfetti(true);
-             toast.success("Success! ", { description: "Temperature NFT Claimed Successfully!" });
-             setTimeout(() => setShowConfetti(false), 5000);
-        }
-        if (isConfirmErrorTemp) {
-             updateActionStatus(ACTION_TYPE_TEMP, { isClaiming: false, claimError: "Transaction failed during confirmation." });
-        }
-    }, [isConfirmingTemp, isConfirmedTemp, isConfirmErrorTemp]);
-
-    // Transport Claim Confirmation Effect
-    useEffect(() => {
-        if (isConfirmingTransport) updateActionStatus(ACTION_TYPE_TRANSPORT, { isClaiming: true });
-        if (isConfirmedTransport) {
-             updateActionStatus(ACTION_TYPE_TRANSPORT, { isClaiming: false, canClaim: false, claimError: null, verifySuccessMessage: null, selectedFile: null, selectedFileName: '' }); // Reset file state on success
-             setShowConfetti(true);
-             toast.success("Success! ", { description: "Transport NFT Claimed Successfully!" });
-             setTimeout(() => setShowConfetti(false), 5000);
-        }
-        if (isConfirmErrorTransport) {
-             updateActionStatus(ACTION_TYPE_TRANSPORT, { isClaiming: false, claimError: "Transaction failed during confirmation." });
-        }
-    }, [isConfirmingTransport, isConfirmedTransport, isConfirmErrorTransport]);
-
-    // --- File Handling Logic ---
+    // --- File Handling (Mostly unchanged) ---
     const handleFileChange = (actionType: string, event: React.ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
-
-        // Revoke previous URL if it exists
-        const currentPreviewUrl = actionStatuses[actionType]?.imagePreviewUrl;
-        if (currentPreviewUrl) {
-            URL.revokeObjectURL(currentPreviewUrl);
-        }
-
-        if (file && file.type.startsWith('image/')) {
-            const newPreviewUrl = URL.createObjectURL(file);
-            updateActionStatus(actionType, { 
-                selectedFile: file, 
+        if (file) {
+            updateActionStatus(actionType, {
+                selectedFile: file,
                 selectedFileName: file.name,
-                imagePreviewUrl: newPreviewUrl, // Store new URL
-                verifyError: null, 
-                verifySuccessMessage: null
-             });
+                verifyError: null, // Clear errors on new file select
+                imagePreviewUrl: URL.createObjectURL(file) // Create preview URL
+            });
         } else {
-             // Clear if no file selected or not an image
-             updateActionStatus(actionType, { 
-                selectedFile: null, 
-                selectedFileName: '',
-                imagePreviewUrl: null,
-                verifyError: file ? "Selected file is not a valid image." : null, // Add error if invalid file type
-                verifySuccessMessage: null
+             updateActionStatus(actionType, {
+                 selectedFile: null,
+                 selectedFileName: '',
+                 imagePreviewUrl: null
              });
         }
     };
-
-    // Effect to revoke object URLs on unmount or when file changes clear it
-    useEffect(() => {
-        const transportStatus = actionStatuses[ACTION_TYPE_TRANSPORT];
-        const urlToRevoke = transportStatus?.imagePreviewUrl;
-
-        // Return a cleanup function
-        return () => {
-            if (urlToRevoke) {
-                console.log("Revoking object URL:", urlToRevoke);
-                URL.revokeObjectURL(urlToRevoke);
-            }
-        };
-        // Rerun when the imagePreviewUrl changes for the transport action
-    }, [actionStatuses[ACTION_TYPE_TRANSPORT]?.imagePreviewUrl]); 
 
     const readFileAsBase64 = (file: File): Promise<string> => {
         return new Promise((resolve, reject) => {
             const reader = new FileReader();
-            reader.onload = () => resolve(reader.result as string);
+            reader.onload = () => {
+                if (typeof reader.result === 'string') {
+                    resolve(reader.result.split(',')[1]); // Get Base64 part
+                } else {
+                    reject(new Error("Failed to read file as Base64 string"));
+                }
+            };
             reader.onerror = (error) => reject(error);
             reader.readAsDataURL(file);
         });
     };
 
-    // --- Handle Proof Submission --- 
+
+    // --- Submit Proofs to Attestation Provider ---
     const handleSubmitProofs = async (actionType: string) => {
+        if (!account?.address) {
+             toast.error("Please connect your wallet first.");
+             return;
+        }
         const status = actionStatuses[actionType];
-        if (!status.validationId) {
-            console.error("Cannot submit proofs, validationId is missing.");
-            toast.error("Error", { description: "Validation ID is missing, cannot submit proofs." });
-            return;
+        if (!status.selectedFile) {
+             toast.error("Please select a file to upload.");
+             return;
         }
 
-        console.log(`Submitting proofs for ${actionType}, validationId: ${status.validationId}`);
-        updateActionStatus(actionType, { 
-            isVerifying: true, // Re-use for loading state 
-            verifyError: null, 
-            verifySuccessMessage: null, 
-            currentStatus: "Submitting proofs to UserActions contract..."
+        updateActionStatus(actionType, {
+            isVerifying: true,
+            verifyError: null,
+            verifySuccessMessage: null,
+            currentStatus: "Uploading proof...",
+            canClaim: false,
+            verificationData: null, // Clear previous data
         });
-        stopStatusPolling(actionType);
 
         try {
-            const response = await fetch(`${ATTESTATION_PROVIDER_API_URL}/submit-proofs/${status.validationId}`, {
+             updateActionStatus(actionType, { isReadingFile: true });
+             const fileBase64 = await readFileAsBase64(status.selectedFile);
+             updateActionStatus(actionType, { isReadingFile: false, currentStatus: "Submitting to provider..." });
+
+             const response = await fetch(`${ATTESTATION_PROVIDER_API_URL}/api/v1/validate-action`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    userAddress: account.address, // Use connected IOTA address
+                    actionType: actionType,
+                    proofData: fileBase64, // Send base64 encoded file data
+                    fileName: status.selectedFileName
+                }),
             });
 
-            const data = await response.json();
+             const data = await response.json();
 
-            if (!response.ok) {
-                if (response.status === 501) {
-                    throw new Error("Proof submission endpoint is not implemented on the provider.");
-                } 
-                throw new Error(data.error || `Proof submission failed: ${response.statusText}`);
-            }
+             if (!response.ok) {
+                 throw new Error(data.error || `Verification request failed: ${response.statusText}`);
+             }
 
-            console.log("Proof submission response:", data);
-            updateActionStatus(actionType, { 
-                isVerifying: false,
-                currentStatus: "Proofs submitted. Checking final status...",
-            });
-            startStatusPolling(actionType, status.validationId);
-            toast.info("Processing", { description: "Proofs submitted, waiting for final confirmation..." });
+             if (!data.validationId) {
+                 throw new Error("Provider did not return a validation ID.");
+             }
+
+             console.log(`Verification request submitted. Validation ID: ${data.validationId}`);
+             toast.success("Proof submitted! Waiting for verification...");
+             updateActionStatus(actionType, {
+                 isVerifying: false, // Upload complete, now polling
+                 validationId: data.validationId,
+                 verifyError: null,
+             });
+             // Start polling for status updates
+             startStatusPolling(actionType, data.validationId);
 
         } catch (error: any) {
-            console.error("Proof submission error:", error);
-            const shortMessage = error.message || "An unknown error occurred during proof submission.";
-            updateActionStatus(actionType, { 
-                isVerifying: false, 
-                verifyError: shortMessage,
-                currentStatus: `Proof Submission Error: ${shortMessage}`
+             console.error("Error submitting proofs:", error);
+             updateActionStatus(actionType, {
+                 isVerifying: false,
+                 isReadingFile: false,
+                 verifyError: `Submission failed: ${error.message}`,
+                 currentStatus: `Error: ${error.message}`
              });
-            toast.error("Error", { description: `Proof submission failed: ${shortMessage}` });
         }
     };
 
-    // --- Render Helper --- 
+
+    // --- Handle NFT Claim ---
+    const handleClaim = useCallback(async (actionType: string) => {
+        if (!client || !account?.address || !nftPackageId) {
+            toast.error("Client, account, or NFT package config missing.");
+            return;
+        }
+        const status = actionStatuses[actionType];
+        if (!status.canClaim || !status.validationId || !status.verificationData) {
+            toast.warning("Not ready to claim or missing verification data.");
+            return;
+        }
+         if (isTxPending) return; // Prevent concurrent claims
+
+        updateActionStatus(actionType, {
+            isClaiming: true,
+            claimError: null,
+            claimSuccessTx: null,
+        });
+        toast.info(`Claiming NFT for ${actionType}...`);
+
+        try {
+            const tx = new Transaction();
+            tx.setGasBudget(100_000_000); // Adjust gas budget
+
+            // --- Adapt moveCall based on your IOTA NFT claim function ---
+            let targetFunction = '';
+            if (actionType === ACTION_TYPE_TEMP) {
+                targetFunction = `${nftPackageId}::temp_nft::claim`; // Example
+            } else if (actionType === ACTION_TYPE_TRANSPORT) {
+                 targetFunction = `${nftPackageId}::transport_nft::claim`; // Example
+            } else {
+                 throw new Error(`Unknown action type for claim: ${actionType}`);
+            }
+
+             // Prepare arguments based on what the Move contract expects
+             // This likely includes the verification data received from the provider
+             // Example: claim(recipient: address, verification_id: vector<u8>, timestamp: u64, signature: vector<u8>)
+             const { timestamp, signature, /* other needed fields */ } = status.verificationData;
+             // Ensure data types match Move contract (e.g., convert timestamp, encode strings/signatures)
+             const verificationIdBytes = new TextEncoder().encode(status.validationId); // Assuming ID is string
+             const signatureBytes = Buffer.from(signature, 'hex'); // Assuming signature is hex string
+
+            tx.moveCall({
+                target: targetFunction,
+                arguments: [
+                    // Arguments MUST match the Move function signature
+                     tx.pure.address(account.address),          // recipient
+                     tx.pure(Array.from(verificationIdBytes)), // verification_id (vector<u8>)
+                     tx.pure.u64(timestamp),                    // timestamp (u64) - ensure it's a compatible number/bigint
+                     tx.pure(Array.from(signatureBytes)),      // signature (vector<u8>)
+                     // Add other arguments from status.verificationData if needed
+                ],
+                 // typeArguments: []
+            });
+            // --- End adaptation section ---
+
+             console.log("Constructed Claim Tx:", JSON.stringify((tx as any).raw || tx));
+
+            signAndExecuteTransaction(
+                { transaction: tx },
+                {
+                    onSuccess: ({ digest }) => {
+                        toast.success(`Claim transaction submitted: ${digest}.`);
+                        // Don't need polling here if we trust the success callback implies acceptance
+                        // Optionally, could still poll getTransaction for finality confirmation
+                        updateActionStatus(actionType, {
+                            isClaiming: false,
+                            claimSuccessTx: digest,
+                            canClaim: false, // Prevent double claim
+                            verifySuccessMessage: "Claim successful!", // Update message
+                            currentStatus: "NFT Claimed!",
+                             verificationData: null, // Clear verification data after successful claim
+                         });
+                         setShowConfetti(true);
+                         setTimeout(() => setShowConfetti(false), 5000); // Confetti for 5s
+                         // Fetch latest timestamp after successful claim
+                         fetchLastActionTimestamp(actionType);
+                    },
+                    onError: (error: any) => {
+                        console.error('Claim transaction failed:', error);
+                        toast.error(`Claim failed: ${error.message || 'Unknown error'}`);
+                        updateActionStatus(actionType, {
+                            isClaiming: false,
+                            claimError: `Claim failed: ${error.message || 'Unknown error'}`,
+                        });
+                    },
+                }
+            );
+        } catch (error: any) {
+            console.error('Error constructing claim transaction:', error);
+            toast.error(`Claim construction failed: ${error.message || 'Unknown error'}`);
+             updateActionStatus(actionType, { isClaiming: false, claimError: `Claim construction failed: ${error.message}` });
+        }
+    }, [client, account?.address, nftPackageId, actionStatuses, signAndExecuteTransaction, isTxPending, fetchLastActionTimestamp]); // Add fetchLastActionTimestamp
+
+
+    // --- Render Action Card ---
     const renderActionCard = (actionType: string, title: string, description: string) => {
         const status = actionStatuses[actionType];
-        const isProcessing = status.isVerifying || status.isClaiming || status.isReadingFile || status.pollingIntervalId !== null; 
-        const isAwaitingProofSubmission = status.backendStatus === 'pending_fdc'; 
-        // *** Define explicit boolean for claim button enabled state ***
-        const isClaimEnabled = isConnected && status.canClaim && status.lastRecordedTimestamp > 0 && !isProcessing;
+        const isTransport = actionType === ACTION_TYPE_TRANSPORT;
+
+        // Format timestamp for display
+        const lastActionDate = status.lastRecordedTimestamp > 0
+            ? new Date(status.lastRecordedTimestamp * 1000).toLocaleString() // Assuming timestamp is in seconds
+            : 'Never';
 
         return (
-            <Card key={actionType}>
+            <Card>
                 <CardHeader>
                     <CardTitle>{title}</CardTitle>
                     <CardDescription>{description}</CardDescription>
+                     <CardDescription className="text-xs pt-1">Last Recorded: {lastActionDate}</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                    {actionType === ACTION_TYPE_TRANSPORT && (
-                        <div className="space-y-2">
-                             <label htmlFor={`file-upload-${actionType}`} className="text-sm font-medium">Upload Screenshot:</label>
-                            <div className="flex items-center space-x-2">
-                                <Input 
-                                    id={`file-upload-${actionType}`} type="file" accept="image/*" 
-                                    onChange={(e) => handleFileChange(actionType, e)}
-                                    className="flex-grow file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary file:text-primary-foreground hover:file:bg-primary/90 cursor-pointer"
-                                    disabled={isProcessing}
-                                />
-                                {status.selectedFileName && <span className="text-sm text-muted-foreground truncate max-w-[150px]" title={status.selectedFileName}>{status.selectedFileName}</span>}
-                            </div>
-                        </div>
-                    )}
+                     {/* File Upload for Transport */}
+                     {isTransport && (
+                         <div className="space-y-2">
+                             <label htmlFor={`file-upload-${actionType}`} className="text-sm font-medium">
+                                 Upload Proof (Screenshot):
+                             </label>
+                             <Input
+                                 id={`file-upload-${actionType}`}
+                                 type="file"
+                                 accept="image/*" // Accept images
+                                 onChange={(e) => handleFileChange(actionType, e)}
+                                 disabled={status.isVerifying || status.isReadingFile || status.pollingIntervalId !== null}
+                             />
+                             {status.selectedFileName && !status.isReadingFile && (
+                                 <p className="text-xs text-muted-foreground">Selected: {status.selectedFileName}</p>
+                             )}
+                             {status.isReadingFile && (
+                                  <p className="text-xs text-muted-foreground flex items-center"><Loader2 className="mr-1 h-3 w-3 animate-spin" /> Reading file...</p>
+                             )}
+                              {status.imagePreviewUrl && (
+                                <img src={status.imagePreviewUrl} alt="Preview" className="mt-2 max-h-40 rounded border" />
+                             )}
+                         </div>
+                     )}
 
-                    {/* Image Preview */} 
-                    {actionType === ACTION_TYPE_TRANSPORT && status.imagePreviewUrl && (
-                        <div className="my-4 p-2 border rounded-md flex justify-center bg-muted/40">
-                            <img 
-                                src={status.imagePreviewUrl} 
-                                alt="Screenshot preview" 
-                                className="max-h-48 max-w-full object-contain rounded-sm"
-                            />
-                        </div>
-                    )}
-
-                    <Button 
-                        onClick={() => handleVerify(actionType)} 
-                        // Keep existing disable logic for verify button
-                        disabled={!isConnected || isProcessing || status.canClaim } 
-                        className="w-full"
-                    >
-                        {(status.isVerifying || status.isReadingFile) && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                        {status.pollingIntervalId ? 'Checking Status...' : `Verify ${actionType === ACTION_TYPE_TRANSPORT ? (status.selectedFile ? 'Selected Screenshot' : 'Transport') : 'Condition'}`}
-                    </Button>
-
-                    {status.pollingIntervalId && status.currentStatus && !status.verifyError && !status.verifySuccessMessage && (
-                         <Alert variant="default" className="flex items-center">
-                             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                            <AlertDescription>{status.currentStatus}</AlertDescription>
-                        </Alert>
-                    )}
-
-                    {status.verifyError && (
-                        <Alert variant="destructive">
-                            <XCircle className="h-4 w-4" />
-                            <AlertTitle>Verification Error</AlertTitle>
-                            <AlertDescription>{status.verifyError}</AlertDescription>
-                        </Alert>
-                    )}
-                    {status.verifySuccessMessage && status.canClaim && (
-                         <Alert variant="default">
-                            <CheckCircle className="h-4 w-4" />
-                            <AlertTitle>Verification Status</AlertTitle>
-                            <AlertDescription>{status.verifySuccessMessage}</AlertDescription>
-                        </Alert>
-                    )}
-                    
-                    {isAwaitingProofSubmission && (
-                         <Button 
-                            onClick={() => handleSubmitProofs(actionType)} 
-                            disabled={!isConnected || status.isVerifying || status.isClaiming} 
-                            className="w-full" variant="secondary"
-                         >
-                             {status.isVerifying && status.currentStatus?.includes("Submitting proofs") && <Loader2 className="mr-2 h-4 w-4 animate-spin" />} 
-                            Check & Submit Proofs
-                         </Button>
-                    )}
-
-                    <Button 
-                        onClick={() => handleClaim(actionType)} 
-                        // Use the calculated boolean for disabled state
-                        disabled={!isClaimEnabled} 
-                        className="w-full" variant="outline"
-                    >
-                        {status.isClaiming && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                        Claim {title} NFT
-                    </Button>
-                    {status.claimError && (
+                     {/* Status Display Area */}
+                     {status.currentStatus && !status.verifyError && !status.verifySuccessMessage && (
+                          <Alert variant="default">
+                             <Loader2 className="h-4 w-4 animate-spin" />
+                             <AlertDescription>{status.currentStatus}</AlertDescription>
+                         </Alert>
+                     )}
+                     {status.verifyError && (
                          <Alert variant="destructive">
-                            <XCircle className="h-4 w-4" />
-                            <AlertTitle>Claim Error</AlertTitle>
-                            <AlertDescription>{status.claimError}</AlertDescription>
-                        </Alert>
-                    )}
-                      {status.claimSuccessTx && !status.isClaiming && !status.claimError && (
-                         <Alert variant="default">
-                            <CheckCircle className="h-4 w-4" />
-                            <AlertTitle>Claim Pending</AlertTitle>
-                            <AlertDescription>
-                                Transaction submitted: <a href={`${flareTestnet.blockExplorers.default.url}/tx/${status.claimSuccessTx}`} target="_blank" rel="noopener noreferrer" className="underline">View on Explorer</a>
-                            </AlertDescription>
-                        </Alert>
-                    )}
+                             <XCircle className="h-4 w-4" />
+                             <AlertTitle>Verification Error</AlertTitle>
+                             <AlertDescription>{status.verifyError}</AlertDescription>
+                         </Alert>
+                     )}
+                     {status.verifySuccessMessage && (
+                         <Alert variant="success">
+                             <CheckCircle className="h-4 w-4" />
+                             <AlertTitle>Verification Success</AlertTitle>
+                             <AlertDescription>{status.verifySuccessMessage}</AlertDescription>
+                         </Alert>
+                     )}
+                     {status.claimError && (
+                         <Alert variant="destructive">
+                              <XCircle className="h-4 w-4" />
+                             <AlertTitle>Claim Error</AlertTitle>
+                             <AlertDescription>{status.claimError}</AlertDescription>
+                         </Alert>
+                     )}
+                     {status.claimSuccessTx && (
+                         <Alert variant="success">
+                              <CheckCircle className="h-4 w-4" />
+                             <AlertTitle>Claim Successful!</AlertTitle>
+                             <AlertDescription>
+                                 Transaction Digest:
+                                 <a
+                                      href={`${client?.network?.explorerUrl}/transaction/${status.claimSuccessTx}`} // Adjust explorer URL based on client network info
+                                     target="_blank"
+                                     rel="noopener noreferrer"
+                                     className="ml-1 underline break-all"
+                                     title={status.claimSuccessTx}
+                                 >
+                                      {status.claimSuccessTx.substring(0, 10)}...
+                                 </a>
+                             </AlertDescription>
+                         </Alert>
+                     )}
+
                 </CardContent>
                 <CardFooter>
-                    <p className="text-xs text-muted-foreground">
-                        Last Recorded: {status.lastRecordedTimestamp > 0 ? new Date(status.lastRecordedTimestamp * 1000).toLocaleString() : 'Never'}
-                    </p>
-                    {/* Debug display */}
-                    {/* <p className="text-xs text-red-500 ml-4">
-                        Debug: canClaim={status.canClaim.toString()}, ts={status.lastRecordedTimestamp}, isProcessing={isProcessing.toString()}, isEnabled={isClaimEnabled.toString()}
-                    </p> */}
+                     {isTransport ? (
+                         // Button to submit proofs for transport
+                         <Button
+                             onClick={() => handleSubmitProofs(actionType)}
+                             disabled={!status.selectedFile || status.isVerifying || status.isReadingFile || status.pollingIntervalId !== null || !account}
+                         >
+                             {(status.isVerifying || status.isReadingFile) ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
+                             {status.isReadingFile ? 'Reading...' : status.isVerifying ? 'Submitting...' : 'Verify & Submit Proof'}
+                         </Button>
+                     ) : (
+                         // Button to directly verify for Temp (assuming no file needed)
+                         // TODO: Implement handleVerify for non-file actions if needed
+                         <Button disabled={true}>Verify {title} (Not Implemented)</Button>
+                     )}
+
+                     {/* Claim Button - Enabled only when verification is complete */}
+                     <Button
+                         onClick={() => handleClaim(actionType)}
+                         disabled={!status.canClaim || status.isClaiming || isTxPending || !!status.claimSuccessTx}
+                         className="ml-auto" // Push claim button to the right
+                     >
+                         {(status.isClaiming || isTxPending) && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                         {status.claimSuccessTx ? 'NFT Claimed' : status.isClaiming ? 'Claiming...' : 'Claim NFT'}
+                     </Button>
                 </CardFooter>
             </Card>
         );
-    }
+    };
 
     return (
-        <div className="container mx-auto p-4 md:p-6">
-            {showConfetti && <Confetti recycle={false} />}
-            <h1 className="text-3xl font-bold mb-6">Verify Environmental Actions</h1>
-            <p className="mb-8 text-muted-foreground">Prove your real-world sustainable actions using Flare Time Series Oracle (FTSO) and FDC attestations to claim unique Carbon Credit NFTs.</p>
+        <div className="space-y-6">
+            {showConfetti && <Confetti recycle={false} numberOfPieces={300} />}
+            <h1 className="text-3xl font-bold tracking-tight">Record Environmental Actions</h1>
+            <p className="text-muted-foreground">
+                Verify your real-world actions via an attestation provider and claim corresponding Carbon Credit NFTs on the IOTA network.
+            </p>
 
-            {!isConnected && (
-                 <Alert variant="default" className="mb-6">
-                    <AlertTitle>Wallet Not Connected</AlertTitle>
-                    <AlertDescription>Please connect your wallet to verify actions and claim NFTs.</AlertDescription>
-                </Alert>
-            )}
+             {!account && (
+                 <p className="text-center text-muted-foreground py-10">Please connect your wallet to record actions.</p>
+             )}
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {/* {renderActionCard(
-                    ACTION_TYPE_TEMP, 
-                    "Hot Weather Activity", 
-                    "Verify if the temperature in Seoul, South Korea is currently above 15°C using OpenWeatherMap data attested via FDC."
-                )} */}
-                {renderActionCard(
-                    ACTION_TYPE_TRANSPORT, 
-                    "Sustainable Transport", 
-                    "Verify completion of a sustainable transport activity (cycling, walking, running, etc.) by uploading a screenshot from your fitness app (Analyzed by AI Vision)."
-                )}
-            </div>
+             {account && (
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {/* Render card for Temp action */}
+                     {/* {renderActionCard(
+                         ACTION_TYPE_TEMP,
+                         "Temperature Check",
+                         "Verify if the temperature in Seoul is over 15°C (Placeholder - requires attestation provider integration without file upload)."
+                     )} */}
+                     {renderActionCard(
+                         ACTION_TYPE_TRANSPORT,
+                         "Sustainable Transport",
+                         "Upload a screenshot from your mobility app (e.g., Kakao T) showing sustainable transport usage (bike, walk, public transport) to claim NFT rewards based on distance/activity."
+                     )}
+                 </div>
+             )}
         </div>
     );
-} 
+}

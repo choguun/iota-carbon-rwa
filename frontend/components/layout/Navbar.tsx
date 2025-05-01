@@ -1,6 +1,7 @@
 import React from 'react';
 import Link from 'next/link';
 import ConnectWallet from './ConnectWallet'; // Assuming ConnectWallet is in the same directory
+import { WalletStatus } from './WalletStatus';
 
 const Navbar = () => {
   return (
@@ -38,6 +39,7 @@ const Navbar = () => {
         <div className="flex flex-1 items-center justify-end space-x-2">
           <ConnectWallet />
         </div>
+        <WalletStatus />
       </div>
     </header>
   );

@@ -1,5 +1,9 @@
+'use client';
+
 import { useCurrentAccount } from "@iota/dapp-kit";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { AlertTriangle } from 'lucide-react';
 import { OwnedObjects } from "./OwnedObjects";
 
 export function WalletStatus() {
@@ -20,11 +24,18 @@ export function WalletStatus() {
               </p>
             </div>
           ) : (
-            <p className="text-sm text-muted-foreground">Wallet not connected</p>
+            <Alert variant="default" className="mt-2">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertDescription className="ml-1">
+                Wallet not connected.
+              </AlertDescription>
+            </Alert>
           )}
-          <div className="mt-4">
-            <OwnedObjects />
-          </div>
+          {account && (
+            <div className="mt-4">
+              <OwnedObjects />
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>

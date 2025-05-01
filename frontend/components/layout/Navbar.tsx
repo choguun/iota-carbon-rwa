@@ -39,7 +39,7 @@ const Navbar = () => {
         <div className="flex flex-1 items-center justify-end space-x-2">
           <ConnectWallet />
         </div>
-        <WalletStatus />
+        {/* <WalletStatus /> */}
       </div>
     </header>
   );

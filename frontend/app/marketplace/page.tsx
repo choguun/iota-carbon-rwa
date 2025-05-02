@@ -144,6 +144,8 @@ export default function MarketplacePage() {
     // For now, we'll use a placeholder.
     const fetchListings = useCallback(async () => {
         // Check required config
+        let foundListingObjectIds: string[] = []; // Declare outside the try block
+
         if (!client || marketplacePackageId === 'PLACEHOLDER_MARKETPLACE_PACKAGE_ID' || listingRegistryId === 'PLACEHOLDER_REGISTRY_ID') {
             setError("Marketplace contract details not configured or client unavailable.");
             setListings([]);
@@ -155,11 +157,9 @@ export default function MarketplacePage() {
         console.log("Fetching listings from marketplace...");
 
         try {
-            // --- Step 1: Call the view function to get active listing IDs ---            
-            let foundListingObjectIds: string[] = []; // Declare here
-
-            const tx = new Transaction();
+            // Use devInspectTransactionBlock for read-only calls (Verify with SDK docs)
             // No gas budget needed for devInspect usually
+            const tx = new Transaction();
             tx.moveCall({
                target: `${marketplacePackageId}::marketplace::get_active_listing_ids`,
                arguments: [tx.object(listingRegistryId)],
@@ -173,30 +173,43 @@ export default function MarketplacePage() {
             }
 
             // Execute the dry run
+            // Note: Ensure devInspectTransactionBlock is the correct method in your IOTA SDK version.
             const response = await client.devInspectTransactionBlock({
                 sender: senderAddress,
                 transactionBlock: tx, // Pass the constructed Transaction object
             });
 
-            // --- Process the response --- 
-            // The path to the returned vector<ID> depends entirely on the SDK's response format for `call` or view functions.
-            // For devInspect, it might be under `results` or `returnValues`.
-            // This parsing is a GUESS and needs verification.
-            // Example: response might be { values: [ [vector_bytes] ] } or similar.
-            // Adjust this path based on actual devInspect response structure:
-            const potentialResult = (response as any)?.results?.[0]?.returnValues?.[0]; // Example path
+            // Use a different name to avoid conflict later
+            const viewCallResults = (response as any)?.results; 
+            const commandResult = viewCallResults?.[0]; // Result of the first (and only) command
+            const returnValues = commandResult?.returnValues; // Return values of that command
 
-            // Process the response
-            // The return value might be encoded (e.g., BCS bytes). Decoding might be needed.
-            // Assuming for now it returns a structure interpretable as an array of strings.
-            if (potentialResult && Array.isArray(potentialResult)) {
-                // TODO: Add decoding logic if necessary based on `potentialResult[1]` (type info)
-                foundListingObjectIds = potentialResult as string[]; // Assign to outer scope variable
-                console.log("View function returned listing IDs:", foundListingObjectIds);
+            if (!returnValues || returnValues.length === 0) {
+                console.warn("devInspectTransactionBlock did not return any values.", response);
+                foundListingObjectIds = [];
             } else {
-                // If the view function call fails or returns unexpected structure
-                console.warn("View function get_active_listing_ids did not return an array in the expected location.", response);
-                foundListingObjectIds = []; // Default to empty
+                // Assuming the first return value contains our vector<ID>
+                // The structure is often [value, typeInfo]
+                const [value, typeInfo] = returnValues[0]; 
+                console.log("Raw return value:", value, "Type info:", typeInfo);
+
+                // TODO: Decode BCS if necessary!
+                // The `value` might be a base64 string or Uint8Array representing BCS encoded data.
+                // You might need a BCS library or SDK helper to decode it based on the `typeInfo`.
+                // Example (Placeholder - requires BCS library):
+                // if (typeInfo includes 'vector<ID>' or similar) {
+                //    const decoded = bcs.de(typeInfo, value, { vector: 'vector', address: 'hex' });
+                //    foundListingObjectIds = decoded; 
+                // } else { ... handle error ... } 
+
+                // For now, ASSUME the value is directly the array of strings (unlikely for complex types)
+                if (Array.isArray(value)) {
+                    foundListingObjectIds = value as string[];
+                    console.log("Parsed listing IDs (assuming direct array return):", foundListingObjectIds);
+                } else {
+                    console.warn("Returned value is not an array as expected (BCS decoding might be needed). Value:", value);
+                    foundListingObjectIds = [];
+                }
             }
 
             if (foundListingObjectIds.length === 0) {
@@ -271,12 +284,85 @@ export default function MarketplacePage() {
 
         } catch (err: unknown) {
             const errorMessage = err instanceof Error ? err.message : String(err);
-            console.error("Error fetching marketplace listings:", err);
-            setError(`Failed to load marketplace: ${errorMessage}`);
-            setListings([]);
+            console.error("Error during fetchListings:", err);
+            setError(`Failed to load marketplace listings: ${errorMessage}`);
+            setListings([]); // Clear listings on error
+            foundListingObjectIds = []; // Ensure it's cleared
         } finally {
             setIsLoading(false);
         }
+
+        // --- Step 2: Fetch details for found listing IDs (now outside the main try block) ---
+        if (foundListingObjectIds.length === 0) {
+            console.log("No listing IDs found to fetch details for.");
+            setListings([]); // Ensure listings are empty if no IDs were found
+            setIsLoading(false);
+            return; // Exit early
+        }
+
+        console.log("Fetching details for listing IDs:", foundListingObjectIds);
+
+        // Fetch details for each listing object
+        const listingDetailsPromises = foundListingObjectIds.map(async (listingId: string) => {
+            try {
+                const listingResp = await client.getObject({ id: listingId });
+                const listingContent = listingResp?.data as ListingObjectContent | null;
+
+                if (!listingContent || listingContent.dataType !== 'moveObject' || !listingContent.type?.startsWith(`${marketplacePackageId}::marketplace::Listing`)) {
+                    console.warn(`Object ${listingId} is not a valid Listing object.`);
+                    return null;
+                }
+
+                const fields = listingContent.fields;
+                const nftId = fields.nft_id;
+
+                // Fetch NFT details separately
+                let nftMetadata: MarketplaceListingData['nftMetadata'] = {};
+                try {
+                    const nftResp = await client.getObject({ id: nftId });
+                    const nftContent = nftResp?.data as NftObjectContent | null;
+                    if (nftContent?.fields) {
+                        // TODO: Fetch NFT display object if needed for name/desc/image template
+                        // Use fetched collectionDisplayData
+                        const displayFields = collectionDisplayData?.fields || {};
+                        let imageUrl = displayFields.image_url || '';
+                        if (imageUrl && imageUrl.includes('{id}')) {
+                            imageUrl = imageUrl.replace('{id}', nftId);
+                        }
+
+                        nftMetadata = {
+                            name: displayFields.name,
+                            description: displayFields.description,
+                            imageUrl: imageUrl,
+                            amount_kg_co2e: nftContent.fields.amount_kg_co2e ? parseInt(nftContent.fields.amount_kg_co2e, 10) : undefined,
+                            activity_type: nftContent.fields.activity_type,
+                            issuedTimestamp: nftContent.fields.issuance_timestamp_ms ? parseInt(nftContent.fields.issuance_timestamp_ms, 10) : undefined,
+                        };
+                    }
+                } catch (nftError) {
+                    console.error(`Failed to fetch NFT details for ${nftId}:`, nftError);
+                }
+
+                return {
+                    listingId: listingId,
+                    nftId: nftId,
+                    priceMicroIota: BigInt(fields.price_micro_iota || '0'),
+                    sellerAddress: fields.seller,
+                    nftMetadata: nftMetadata,
+                } as MarketplaceListingData;
+
+            } catch (error) {
+                console.error(`Failed to fetch details for listing ${listingId}:`, error);
+                return { listingId, nftId: '', priceMicroIota: BigInt(0), sellerAddress: '', fetchError: `Failed to load listing ${listingId}` } as MarketplaceListingData;
+            }
+        });
+
+        const results = await Promise.all(listingDetailsPromises);
+        // Filter out nulls, TypeScript should infer the type correctly after filter
+        const validListings = results.filter((r): r is MarketplaceListingData => r !== null);
+
+        console.log("Processed Listings:", validListings);
+        setListings(validListings);
 
     }, [client, account, marketplacePackageId, listingRegistryId]);
 

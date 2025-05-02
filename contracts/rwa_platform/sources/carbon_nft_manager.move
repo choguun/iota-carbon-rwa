@@ -1,18 +1,15 @@
 // Module: carbon_nft_manager
 // Responsible for defining, minting, and managing CarbonCreditNFTs.
 module rwa_platform::carbon_nft_manager {
+    use iota::table::{Self, Table};
+    use iota::display::{Self};
+    use iota::package::{Self, Publisher};
+    use std::string::{Self};
     use iota::object::{Self, UID, ID};
     use iota::transfer;
     use iota::tx_context::{Self, TxContext};
     use iota::event;
-    use iota::table::{Self, Table};
-    use iota::display::{Self, Display};
-    use iota::package::{Self, Publisher};
-    use iota::iota::IOTA;
-    use std::string::{Self, String};
-    use std::vector; // Ensure vector is imported
-
-    // --- Struct Definitions ---
+    use std::vector;
 
     /// Represents a unique, verified carbon credit tied to a specific event.
     public struct CarbonCreditNFT has key, store {
@@ -26,6 +23,9 @@ module rwa_platform::carbon_nft_manager {
         /// Timestamp (Unix milliseconds) when the NFT was minted.
         issuance_timestamp_ms: u64,
     }
+
+    /// One-time witness for claiming the Publisher object.
+    public struct CARBON_NFT_MANAGER has drop {}
 
     /// Capability object granting minting authority. Held by the backend.
     public struct AdminCap has key, store {
@@ -57,6 +57,23 @@ module rwa_platform::carbon_nft_manager {
         verification_id: vector<u8>,
     }
 
+    // --- Getter Functions for CarbonCreditNFT ---
+
+    /// Returns the amount of CO2e in the NFT.
+    public fun get_nft_amount(nft: &CarbonCreditNFT): u64 {
+        nft.amount_kg_co2e
+    }
+
+    /// Returns the activity type code of the NFT.
+    public fun get_nft_activity_type(nft: &CarbonCreditNFT): u8 {
+        nft.activity_type
+    }
+
+    /// Returns the verification ID of the NFT.
+    public fun get_nft_verification_id(nft: &CarbonCreditNFT): vector<u8> {
+        nft.verification_id
+    }
+
     // --- Error Codes ---
 
     /// Returned if the amount_kg_co2e provided for minting is zero.
@@ -69,12 +86,16 @@ module rwa_platform::carbon_nft_manager {
     /// Called once during package deployment. Sets up AdminCap and Registry.
     /// NOTE: Display object must be created in a separate transaction post-deployment
     /// by calling the `create_display` function with the Publisher object.
-    fun init(ctx: &mut TxContext) {
-        // 1. Create and transfer AdminCap to the deployer (publisher).
+    fun init(witness: CARBON_NFT_MANAGER, ctx: &mut TxContext) {
+        // 1. Claim the Publisher object using the one-time witness
+        let publisher = package::claim(witness, ctx);
+        transfer::public_transfer(publisher, tx_context::sender(ctx));
+
+        // 2. Create and transfer AdminCap
         let admin_cap = AdminCap { id: object::new(ctx) };
         transfer::public_transfer(admin_cap, tx_context::sender(ctx));
 
-        // 2. Create and share the Verification Registry.
+        // 3. Create and share the Verification Registry
         let registry = VerificationRegistry {
             id: object::new(ctx),
             processed_ids: table::new<vector<u8>, bool>(ctx)
@@ -118,16 +139,14 @@ module rwa_platform::carbon_nft_manager {
         let keys = vector[
             string::utf8(b"name"),
             string::utf8(b"description"),
-            string::utf8(b"link"),
-            string::utf8(b"image_url"),
-            string::utf8(b"project_url")
+            // string::utf8(b"image_url"),
+            // string::utf8(b"project_url")
         ];
         let values = vector[
             string::utf8(b"Verified Carbon Credit NFT"),
             string::utf8(b"A unique NFT representing verified carbon credits from sustainable transport activities."),
-            string::utf8(b"https://yourproject.xyz/nft/{id}"), // Simplified link template
-            string::utf8(b"https://yourproject.xyz/nft_image/{id}.png"), // Simplified image template
-            string::utf8(b"https://yourproject.xyz") // Project website URL
+            // string::utf8(b"https://yourproject.xyz/nft_image/{id}.png"), // Simplified image template
+            // string::utf8(b"https://yourproject.xyz") // Project website URL
         ];
         // Pass keys and values as separate arguments
         display::add_multiple(&mut display, keys, values);
@@ -137,8 +156,101 @@ module rwa_platform::carbon_nft_manager {
         transfer::public_share_object(display);
     }
 
-    // --- Placeholder for Phase 2 & 3 Functions ---
-    // public entry fun mint_nft(...) { ... }
-    // public entry fun retire_nft(...) { ... }
+    /// Mints a new CarbonCreditNFT. Requires AdminCap authorization.
+    /// Checks against VerificationRegistry to prevent double minting.
+    public entry fun mint_nft(
+        _admin_cap: &AdminCap, // Authorization check is the capability requirement itself
+        registry: &mut VerificationRegistry, // Shared registry to record processed IDs
+        recipient: address,
+        amount_kg_co2e: u64, // In grams or chosen unit
+        activity_type: u8,
+        verification_id: vector<u8>,
+        ctx: &mut TxContext
+    ) {
+        // 1. Validate input
+        assert!(amount_kg_co2e > 0, EInvalidAmount);
 
-} 
+        // 2. Prevent Double Minting
+        assert!(!table::contains(&registry.processed_ids, verification_id), EVerificationIdAlreadyProcessed);
+        // Mark this verification ID as processed
+        table::add(&mut registry.processed_ids, copy verification_id, true);
+
+        // 3. Create the NFT Object
+        let nft = CarbonCreditNFT {
+            id: object::new(ctx),
+            amount_kg_co2e: amount_kg_co2e,
+            activity_type: activity_type,
+            // Store a copy in the NFT, consume the original when adding to the table
+            verification_id: copy verification_id,
+            issuance_timestamp_ms: tx_context::epoch_timestamp_ms(ctx),
+        };
+
+        // 4. Emit Mint Event
+        event::emit(MintNFTEvent {
+            nft_id: object::id(&nft), // Get the immutable ID of the new NFT
+            recipient: recipient,
+            amount_kg_co2e: amount_kg_co2e,
+            verification_id: verification_id, // Use the value consumed by table::add
+        });
+
+        // 5. Transfer NFT to Recipient
+        transfer::public_transfer(nft, recipient);
+    }
+
+    // --- Retirement Function (Phase 3) ---
+
+    /// Retires (burns) a specific CarbonCreditNFT. Called by the NFT owner.
+    public entry fun retire_nft(nft: CarbonCreditNFT, ctx: &mut TxContext) {
+        // Object 'nft' is passed by value, consuming it.
+
+        // 1. Extract necessary data before the object is inaccessible
+        let CarbonCreditNFT {
+            id, // The UID struct
+            amount_kg_co2e,
+            activity_type: _, // Activity type not needed for event, ignored
+            verification_id,
+            issuance_timestamp_ms: _, // Timestamp not needed for event, ignored
+        } = nft; // 'nft' is consumed/destroyed here
+
+        let nft_id_value = object::uid_to_inner(&id); // Get the ID value from the UID
+        let retirer = tx_context::sender(ctx);
+
+        // 2. Emit Retirement Event
+        event::emit(RetireNFTEvent {
+            retirer: retirer,
+            nft_id: nft_id_value,
+            amount_kg_co2e: amount_kg_co2e,
+            verification_id: verification_id, // verification_id is consumed here
+        });
+
+        // 3. Object Destruction happens automatically for fields moved out.
+        //    Explicitly delete the remaining UID wrapper.
+        object::delete(id);
+    }
+
+    #[test_only]
+    /// Checks if a verification ID exists in the registry. Only callable in tests.
+    public fun is_verification_id_processed(registry: &VerificationRegistry, verification_id: vector<u8>): bool {
+        table::contains(&registry.processed_ids, verification_id)
+    }
+
+    #[test_only]
+    /// Creates an AdminCap for testing purposes.
+    public fun test_create_admin_cap(ctx: &mut TxContext): AdminCap {
+        AdminCap { id: object::new(ctx) }
+    }
+
+    #[test_only]
+    /// Creates and shares a VerificationRegistry for testing purposes.
+    /// Returns the ID of the shared registry.
+    public fun test_create_and_share_registry(ctx: &mut TxContext): ID {
+        let registry = VerificationRegistry {
+            id: object::new(ctx),
+            processed_ids: table::new<vector<u8>, bool>(ctx)
+        };
+        let id = object::id(&registry);
+        // Use public_share_object as it has store ability
+        transfer::public_share_object(registry);
+        id
+    }
+}

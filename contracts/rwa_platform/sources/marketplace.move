@@ -1,11 +1,7 @@
 module rwa_platform::marketplace {
-    use iota::object::{Self, UID, ID};
-    use iota::transfer;
-    use iota::tx_context::{Self, TxContext};
     use iota::event;
     use iota::coin::{Self, Coin};
-    use iota::balance::{Self, Balance};
-    use iota::iota::IOTA; // Import the native IOTA coin type
+    use iota::iota::IOTA;
 
     // Import the NFT struct from the other module
     use rwa_platform::carbon_nft_manager::{CarbonCreditNFT};
@@ -55,7 +51,7 @@ module rwa_platform::marketplace {
     // --- Errors ---
     const EIncorrectPaymentAmount: u64 = 101;
     const ENotSeller: u64 = 102;
-    const ECoinNotIOTA: u64 = 103; // Optional, if restricting to IOTA
+    // const ECoinNotIOTA: u64 = 103; // Optional, if restricting to IOTA
 
     // --- Functions ---
 
@@ -163,4 +159,4 @@ module rwa_platform::marketplace {
         object::delete(listing_uid);
     }
 
-} 
+}

@@ -15,12 +15,12 @@ export function Web3Provider({ children }: Web3ProviderProps) {
   const [queryClient] = useState(() => new QueryClient());
 
   return (
-    <QueryClientProvider client={queryClient}>
+      <QueryClientProvider client={queryClient}>
         <IotaClientProvider networks={networkConfig} defaultNetwork="testnet">
-            <WalletProvider autoConnect>
-                {children}
-            </WalletProvider>
+          <WalletProvider autoConnect>
+            {children}
+          </WalletProvider>
         </IotaClientProvider>
-    </QueryClientProvider>
+      </QueryClientProvider>
   );
 } 

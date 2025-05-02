@@ -1,14 +1,12 @@
 'use client';
 
+import '@iota/dapp-kit/dist/index.css';
 import { ConnectButton } from "@iota/dapp-kit";
-import { Button } from "@/components/ui/button";
 import React from 'react';
 
 function ConnectWallet() {
   return (
-    <Button asChild variant="outline" size="sm">
-      <ConnectButton />
-    </Button>
+    <ConnectButton />
   );
 }
 

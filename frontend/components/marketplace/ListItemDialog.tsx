@@ -9,8 +9,8 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import React, { useState, useEffect } from 'react';
-import type { TransactionDigest } from '@iota/sdk'; // Import appropriate type
+import React, { useState, useEffect, useCallback } from 'react';
+import type { TransactionId } from '@iota/sdk'; // Use TransactionId
 
 // Passed from MyAssetsPage - Assuming NftData now uses IOTA Object ID (string)
 interface NftData {
@@ -22,7 +22,7 @@ interface NftData {
 interface ListItemDialogProps {
     nft: NftData;
     onListingComplete: () => void;
-    marketplacePackageId: string; // Pass relevant package/object IDs as props or use config
+    marketplacePackageId: string; // Pass the package ID where the marketplace module resides
 }
 
 // Helper to convert display amount to base units (assuming 6 decimals like IOTA)
@@ -43,7 +43,7 @@ const toBaseUnits = (amount: string, decimals: number = 6): bigint => {
 export default function ListItemDialog({ nft, onListingComplete, marketplacePackageId }: ListItemDialogProps) {
     const [price, setPrice] = useState('');
     const [isListing, setIsListing] = useState(false);
-    const [listingTxDigest, setListingTxDigest] = useState<TransactionDigest | undefined>();
+    const [listingTxDigest, setListingTxDigest] = useState<TransactionId | undefined>(); // Use TransactionId
 
     const account = useCurrentAccount(); // Get connected account info
     const client = useIotaClient();
@@ -56,6 +56,10 @@ export default function ListItemDialog({ nft, onListingComplete, marketplacePack
     const [isWaitingForConfirmation, setIsWaitingForConfirmation] = useState(false);
 
     const handleList = () => {
+        if (!marketplacePackageId || marketplacePackageId === 'PLACEHOLDER_MARKETPLACE_PACKAGE_ID') {
+            toast.error("Marketplace Package ID not configured.");
+            return;
+        }
         if (!client) {
             toast.error("IOTA client not available.");
             return;
@@ -95,19 +99,16 @@ export default function ListItemDialog({ nft, onListingComplete, marketplacePack
             tx.setGasBudget(50_000_000); // Adjust gas budget as needed
 
             // Construct the arguments based on the `listItem` function signature in your Move contract
-            // Example: listItem(marketplace: &mut Marketplace, nft: CarbonCreditNFT, price: u64)
+            // list_item(nft: CarbonCreditNFT, price_micro_iota: u64)
             // Arguments might involve object IDs or pure values
             tx.moveCall({
-                target: `${marketplacePackageId}::marketplace::listItem`, // Adjust module/function name
+                target: `${marketplacePackageId}::marketplace::list_item`, // Use correct function name
                 arguments: [
-                    // tx.object(marketplaceObjectId), // If the marketplace itself is an object argument
-                    tx.object(nft.id),             // The NFT object being listed
-                    tx.pure.u64(priceBaseUnits),   // The price in base units
+                    tx.object(nft.id),             // Argument 0: The NFT object (by ID)
+                    tx.pure.u64(priceBaseUnits)    // Argument 1: The price (u64)
                 ],
                 // typeArguments: [] // If the function has type arguments
             });
-
-             console.log("Constructed Tx:", JSON.stringify(tx.raw)); // For debugging
 
             signAndExecuteTransaction(
                 {
@@ -115,7 +116,7 @@ export default function ListItemDialog({ nft, onListingComplete, marketplacePack
                     // chain: client.chain, // Might be needed depending on dapp-kit version
                 },
                 {
-                    onSuccess: ({ digest }: { digest: TransactionDigest }) => {
+                    onSuccess: ({ digest }: { digest: TransactionId }) => {
                         setListingTxDigest(digest);
                         toast.success(`Listing transaction submitted: ${digest}. Waiting for confirmation...`);
                         setIsWaitingForConfirmation(true); // Start polling
@@ -149,32 +150,27 @@ export default function ListItemDialog({ nft, onListingComplete, marketplacePack
              console.log(`Polling transaction ${listingTxDigest}, attempt ${attempts + 1}`);
             attempts++;
             try {
-                // Check transaction status - adjust based on actual client method
-                 const receipt = await client.getTransaction({transactionId: listingTxDigest});
-
-                 // Check if receipt indicates success (this depends HEAVILY on the SDK structure)
-                 // This is a placeholder check - replace with actual success condition
-                 const isSuccess = receipt?.blockId !== undefined; // Example: check if it's included in a block
-
-                if (isSuccess) {
+                // Use getTransactionBlock with digest
+                const txDetails = await client.getTransactionBlock({ digest: listingTxDigest });
+ 
+                // Check status based on SDK structure - VERIFY THIS PATH
+                const status = (txDetails as any)?.effects?.status?.status; // Example path, adjust as needed
+ 
+                if (status === 'success') {
                     toast.success(`NFT ${nft.metadata?.name || nft.id} listed successfully! Digest: ${listingTxDigest}`);
                     setIsListing(false);
                     setIsWaitingForConfirmation(false);
                     onListingComplete(); // Call the callback
                     clearInterval(intervalId);
-                } else if (attempts >= maxAttempts) {
-                     toast.warning(`Transaction confirmation timed out for ${listingTxDigest}. Please check manually.`);
+                } else if (status === 'failure') {
+                     const errorMsg = (txDetails as any)?.effects?.status?.error || 'Unknown reason';
+                     console.error(`Listing transaction ${listingTxDigest} failed:`, errorMsg);
+                     toast.error(`Listing transaction failed: ${errorMsg}`);
                      setIsListing(false);
                      setIsWaitingForConfirmation(false);
                      clearInterval(intervalId);
                 }
-                // Add error handling if receipt indicates failure
-                 // else if (receipt?.status === 'failed') {
-                 //    toast.error(`Listing transaction failed: ${receipt.error || 'Unknown reason'}. Digest: ${listingTxDigest}`);
-                 //    setIsListing(false);
-                 //    setIsWaitingForConfirmation(false);
-                 //    clearInterval(intervalId);
-                 // }
+                // else: status is pending, continue polling
 
             } catch (error) {
                 console.error(`Error polling transaction ${listingTxDigest}:`, error);

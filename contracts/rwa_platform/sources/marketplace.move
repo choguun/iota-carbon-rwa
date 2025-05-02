@@ -2,11 +2,23 @@ module rwa_platform::marketplace {
     use iota::event;
     use iota::coin::{Self, Coin};
     use iota::iota::IOTA;
+    use iota::table::{Self, Table};
+    use iota::object::{Self, UID, ID};
+    use iota::transfer;
+    use iota::tx_context::{Self, TxContext};
+    use std::vector;
 
     // Import the NFT struct from the other module
     use rwa_platform::carbon_nft_manager::{CarbonCreditNFT};
 
     // --- Structs ---
+
+    /// Shared object holding the IDs of currently active listings.
+    public struct ListingRegistry has key, store {
+        id: UID,
+        /// Maps active Listing object IDs to the seller's address.
+        active_listings: Table<ID, address>
+    }
 
     /// Represents an NFT listed for sale on the marketplace.
     /// Holds the NFT object itself, transferring ownership to the Listing.
@@ -57,6 +69,7 @@ module rwa_platform::marketplace {
 
     /// List an NFT for sale. Consumes the NFT object passed by value.
     public entry fun list_item(
+        registry: &mut ListingRegistry, // Registry to record the active listing
         nft: CarbonCreditNFT, // NFT object transferred to the function
         price_micro_iota: u64, // Asking price
         ctx: &mut TxContext
@@ -73,9 +86,14 @@ module rwa_platform::marketplace {
             seller: sender,
         };
 
+        let listing_id = object::id(&listing);
+
+        // Add to registry
+        table::add(&mut registry.active_listings, listing_id, sender);
+
         // Emit event
         event::emit(ListingCreated {
-            listing_id: object::id(&listing),
+            listing_id: listing_id,
             nft_id: nft_original_id,
             seller: sender,
             price_micro_iota: price_micro_iota,
@@ -87,11 +105,14 @@ module rwa_platform::marketplace {
 
     /// Buy a listed item.
     public entry fun buy_item(
+        registry: &mut ListingRegistry, // Registry to remove the listing from
         listing: Listing, // Pass the Listing object by value
         payment: Coin<IOTA>, // Payment coin (must be IOTA)
         ctx: &mut TxContext
     ) {
         let buyer = tx_context::sender(ctx);
+
+        let listing_obj_id = object::id(&listing); // Get listing ID before consuming
 
         // Check payment amount
         assert!(coin::value(&payment) == listing.price_micro_iota, EIncorrectPaymentAmount);
@@ -105,6 +126,10 @@ module rwa_platform::marketplace {
             seller,          // Seller address
         } = listing; // 'listing' is consumed here
 
+        // Remove from registry *before* potential transfer failures
+        // Use the ID obtained before consumption
+        let _removed_seller = table::remove(&mut registry.active_listings, listing_obj_id);
+
         // Transfer NFT to buyer
         transfer::public_transfer(nft, buyer);
 
@@ -113,24 +138,28 @@ module rwa_platform::marketplace {
 
         // Emit event
         event::emit(ItemSold {
-            listing_id: object::uid_to_inner(&listing_uid), // Get ID from UID
+            listing_id: listing_obj_id, // Use the ID obtained earlier
             nft_id: nft_id,
             seller: seller,
             buyer: buyer,
             price_micro_iota: price_micro_iota,
         });
 
+        // No need to assert sender owns payment, transfer checks that
+
         // Explicitly delete the Listing object's UID
         object::delete(listing_uid);
     }
 
-
     /// Cancel a listing and get the NFT back.
     public entry fun cancel_listing(
+        registry: &mut ListingRegistry, // Registry to remove the listing from
         listing: Listing, // Pass the Listing object by value
         ctx: &mut TxContext
     ) {
         let sender = tx_context::sender(ctx);
+
+        let listing_obj_id = object::id(&listing); // Get listing ID before consuming
 
         // Verify sender is the original seller before consuming the listing
         assert!(sender == listing.seller, ENotSeller);
@@ -145,12 +174,16 @@ module rwa_platform::marketplace {
             .. // Use '..' if you don't need all fields (like price)
         } = listing; // 'listing' is consumed here
 
+        // Remove from registry
+        // Use the ID obtained before consumption
+        let _removed_seller = table::remove(&mut registry.active_listings, listing_obj_id);
+
         // Transfer NFT back to seller
         transfer::public_transfer(nft, seller);
 
         // Emit event
         event::emit(ListingCancelled {
-            listing_id: object::uid_to_inner(&listing_uid), // Get ID from UID
+            listing_id: listing_obj_id, // Use ID obtained earlier
             nft_id: nft_id,
             seller: seller, // which is sender
         });
@@ -159,4 +192,35 @@ module rwa_platform::marketplace {
         object::delete(listing_uid);
     }
 
+    // --- Initialization Function --- //
+
+    /// Called once during package deployment. Creates and shares the ListingRegistry.
+    fun init(ctx: &mut TxContext) {
+        let registry = ListingRegistry {
+            id: object::new(ctx),
+            active_listings: table::new<ID, address>(ctx)
+        };
+        transfer::share_object(registry);
+    }
+
+    // --- View Function --- //
+
+    /// Returns the object IDs of all currently active listings.
+    /// TODO: Verify iteration pattern for iota::table.
+    public fun get_active_listing_ids(registry: &ListingRegistry): vector<ID> {
+        // Attempt iteration pattern common in Move
+        let keys = vector::empty<ID>();
+        let iter = table::iter(&registry.active_listings);
+        loop {
+            let maybe_entry = table::next<ID, address>(&mut iter);
+            if (option::is_none(&maybe_entry)) {
+                break
+            };
+            let (key, _value) = option::destroy_some(maybe_entry);
+            // We only need the key (the Listing object ID)
+            vector::push_back(&mut keys, key);
+        };
+        table::destroy_empty(iter);
+        keys
+    }
 }

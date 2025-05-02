@@ -95,35 +95,12 @@ module rwa_platform::carbon_nft_manager {
         let admin_cap = AdminCap { id: object::new(ctx) };
         transfer::public_transfer(admin_cap, tx_context::sender(ctx));
 
-        // 3. Create and share the Verification Registry
-        let registry = VerificationRegistry {
+        // 3. Create and share the Verification Registry (for minting)
+        let verification_registry = VerificationRegistry {
             id: object::new(ctx),
             processed_ids: table::new<vector<u8>, bool>(ctx)
         };
-        transfer::share_object(registry);
-
-        // 3. Display object creation REMOVED from init.
-        // Must be called separately via `create_display` function.
-        /*
-        let display = display::new<CarbonCreditNFT>(tx_context::publisher(ctx), ctx); // Publisher needed here
-        let keys = vector[
-            string::utf8(b"name"),
-            string::utf8(b"description"),
-            string::utf8(b"link"),
-            string::utf8(b"image_url"),
-            string::utf8(b"project_url")
-        ];
-        let values = vector[
-            string::utf8(b"Verified Carbon Credit NFT"),
-            string::utf8(b"A unique NFT representing verified carbon credits from sustainable transport activities."),
-            string::utf8(b"https://yourproject.xyz/nft/{id}"), // Simplified link template
-            string::utf8(b"https://yourproject.xyz/nft_image/{id}.png"), // Simplified image template
-            string::utf8(b"https://yourproject.xyz") // Project website URL
-        ];
-        display::add_multiple(&mut display, keys, values);
-        display::update_version(&mut display);
-        transfer::public_share_object(display);
-        */
+        transfer::share_object(verification_registry);
     }
 
     // --- Display Creation Function ---

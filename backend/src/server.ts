@@ -13,7 +13,7 @@ import { Transaction } from '@iota/iota-sdk/transactions';
 import { Ed25519Keypair } from '@iota/iota-sdk/keypairs/ed25519';
 // BCS for serialization
 import { bcs } from '@iota/iota-sdk/bcs';
-import { toHEX, toB64 } from '@iota/iota-sdk/utils';
+// import { toHEX, toB64 } from '@iota/iota-sdk/utils'; // toHEX not needed here
 import { Buffer } from 'buffer';
 
 // --- Interfaces & Storage ---
@@ -258,7 +258,8 @@ app.post('/request-attestation', asyncHandler(async (req: Request, res: Response
             const tx = new Transaction();
             tx.setGasBudget(100_000_000); // Set gas budget on the transaction
 
-            const recipientHex = toHEX(userAddress); // Convert recipient address
+            // userAddress from frontend should already be hex (0x...)
+            const recipientHex = userAddress;
 
             tx.moveCall({
                 target: `${iotaPackageId}::carbon_nft_manager::mint_nft`,

@@ -21,6 +21,7 @@
     "typescript": "^5.5.3"
   },
   "dependencies": {
+    "@iota/iota-sdk": "^0.6.0",
     "cors": "^2.8.5",
     "openai": "^4.96.0"
   }

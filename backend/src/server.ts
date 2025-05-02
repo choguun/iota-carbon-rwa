@@ -3,14 +3,53 @@ import dotenv from 'dotenv';
 import cors from 'cors';
 import OpenAI from 'openai';
 import crypto from 'crypto';
+// Base client from @iota/sdk
+// import { initLogger, Utils } from '@iota/sdk'; // Keep Utils for now
+// IotaClient for network interactions
+import { IotaClient, getFullnodeUrl } from '@iota/iota-sdk/client';
+// Higher-level wallet, account, transaction builders from @iota/iota-sdk
+import { Transaction } from '@iota/iota-sdk/transactions';
+// Keypair
+import { Ed25519Keypair } from '@iota/iota-sdk/keypairs/ed25519';
+// BCS for serialization
+import { bcs } from '@iota/iota-sdk/bcs';
+import { toHEX, toB64 } from '@iota/iota-sdk/utils';
+import { Buffer } from 'buffer';
+
+// --- Interfaces & Storage ---
+interface VisionVerificationResult {
+    activityType?: string; // e.g., "cycling", "walking", "other"
+    distanceKm?: number;
+    date?: string; // e.g., "YYYY-MM-DD"
+    error?: string; // Error message from AI parsing
+  }
 
 dotenv.config();
 
 const openaiApiKey = process.env.OPENAI_API_KEY;
+
+// Load IOTA config
+const iotaNodeUrl = process.env.IOTA_NODE_URL;
+const iotaPackageId = process.env.IOTA_PACKAGE_ID;
+const iotaAdminCapId = process.env.IOTA_ADMIN_CAP_ID;
+const iotaVerificationRegistryId = process.env.IOTA_VERIFICATION_REGISTRY_ID;
+const iotaDeployerPrivateKey = process.env.IOTA_DEPLOYER_PRIVATE_KEY;
+
+if (!openaiApiKey) throw new Error("OPENAI_API_KEY is not set in .env");
+if (!iotaNodeUrl) throw new Error("IOTA_NODE_URL is not set in .env");
+if (!iotaPackageId) throw new Error("IOTA_PACKAGE_ID is not set in .env");
+if (!iotaAdminCapId) throw new Error("IOTA_ADMIN_CAP_ID is not set in .env");
+if (!iotaVerificationRegistryId) throw new Error("IOTA_VERIFICATION_REGISTRY_ID is not set in .env");
+if (!iotaDeployerPrivateKey) throw new Error("IOTA_DEPLOYER_PRIVATE_KEY is not set in .env");
+
 // --- Constants ---
 const EXPECTED_ACTION_TYPE_TRANSPORT = "SUSTAINABLE_TRANSPORT_KM";
 
-if (!openaiApiKey) throw new Error("OPENAI_API_KEY is not set in .env");
+// TODO: Define these more formally, matching the Move contract
+const ACTIVITY_CODE_CYCLING = 1;
+const ACTIVITY_CODE_WALKING = 2;
+const EMISSION_FACTOR_CYCLING_PER_KM = 0.015; // Example kg CO2e per km
+const EMISSION_FACTOR_WALKING_PER_KM = 0.020; // Example kg CO2e per km
 
 const openai = new OpenAI({
     apiKey: openaiApiKey,
@@ -154,18 +193,135 @@ app.post('/request-attestation', asyncHandler(async (req: Request, res: Response
 
         // 1. Verify with OpenAI
         const visionResult = await verifyTransportWithVision(imageBase64);
-        if (!visionResult.success || !visionResult.distance || !visionResult.details?.activityType) {
-            console.error("Vision verification failed:", visionResult.error);
-            // Store failed result? Maybe not necessary unless debugging
+        // Use optional chaining and nullish coalescing for safety
+        const activityTypeString = visionResult.details?.activityType;
+        const distanceKm = visionResult.distance;
+
+        if (!visionResult.success || typeof distanceKm !== 'number' || !activityTypeString) {
+            console.error("Vision verification failed or returned incomplete data:", visionResult.error);
             return res.status(400).json({ error: `Verification failed: ${visionResult.error || 'Unknown vision error'}` });
         }
         console.log("Vision verification successful:", visionResult.details);
 
-        const validationId = `0x${crypto.randomBytes(32).toString('hex')}`;
+        // 2. Prepare Minting Parameters
+        let activityCode: number;
+        let emissionFactor: number;
 
+        switch (activityTypeString.toLowerCase()) {
+            case 'cycling':
+                activityCode = ACTIVITY_CODE_CYCLING;
+                emissionFactor = EMISSION_FACTOR_CYCLING_PER_KM;
+                break;
+            case 'walking': // Add walking if applicable
+            // case 'running': // Or other types supported by your contract
+                activityCode = ACTIVITY_CODE_WALKING;
+                emissionFactor = EMISSION_FACTOR_WALKING_PER_KM;
+                break;
+            default:
+                // Should not happen if visionResult.success is true, but handle defensively
+                console.error(`Unsupported activity type from vision: ${activityTypeString}`);
+                return res.status(400).json({ error: `Unsupported activity type for minting: ${activityTypeString}` });
+        }
+
+        // Calculate CO2e amount (convert kg to grams or chosen unit for u64)
+        // Assuming the contract expects GRAMS
+        const amountKgCo2e = distanceKm * emissionFactor;
+        const amountGramsCo2e = Math.round(amountKgCo2e * 1000); 
+
+        if (amountGramsCo2e <= 0) {
+            return res.status(400).json({ error: `Calculated CO2e amount is not positive (${amountGramsCo2e}g)` });
+        }
+
+        // Generate verification ID (use a secure, unique ID)
+        // Using a simple hash of user + timestamp + distance for now
+        const verificationData = `${userAddress}-${Date.now()}-${distanceKm}-${activityCode}`;
+        const verificationIdBytes = crypto.createHash('sha256').update(verificationData).digest();
+
+        // 3. Initialize IOTA Client and Signer
+        // initLogger(); // Optional: Initialize SDK logger
+        let transactionDigest: string | undefined;
+
+        try {
+            const client = new IotaClient({ url: iotaNodeUrl });
+
+            // Generate KeyPair from private key
+            const deployerPrivateKeyBytes = Buffer.from(
+                iotaDeployerPrivateKey.startsWith('0x') ? iotaDeployerPrivateKey.substring(2) : iotaDeployerPrivateKey,
+                'hex'
+            );
+            // Ensure the private key is the correct length for Ed25519 (32 bytes)
+            if (deployerPrivateKeyBytes.length !== 32) {
+                throw new Error('Invalid Ed25519 private key length. Expected 32 bytes.');
+            }
+            const keypair = Ed25519Keypair.fromSecretKey(deployerPrivateKeyBytes);
+     
+            const tx = new Transaction();
+            tx.setGasBudget(100_000_000); // Set gas budget on the transaction
+
+            const recipientHex = toHEX(userAddress); // Convert recipient address
+
+            tx.moveCall({
+                target: `${iotaPackageId}::carbon_nft_manager::mint_nft`,
+                arguments: [
+                    tx.object(iotaAdminCapId),                          // admin_cap: &AdminCap
+                    tx.object(iotaVerificationRegistryId),              // registry: &mut VerificationRegistry
+                    tx.pure.address(recipientHex),                      // recipient: address
+                    tx.pure.u64(amountGramsCo2e),                       // amount_kg_co2e: u64
+                    tx.pure.u8(activityCode),                           // activity_type: u8
+                    tx.pure(bcs.vector(bcs.U8).serialize(verificationIdBytes)) // verification_id: vector<u8>
+                ],
+                typeArguments: []
+            });
+
+
+            console.log("Constructed mint_nft transaction:", JSON.stringify(tx.toJSON()));
+
+            // 5. Sign and Submit the Prepared Transaction
+            // const blockIdAndBlock = await deployerAccount.signAndSubmitTransaction(preparedTx);
+            // console.log("Minting transaction submitted. Block ID:", blockIdAndBlock.blockId);
+
+            const result = await client.signAndExecuteTransaction({
+                signer: keypair,
+                transaction: tx,
+                requestType: 'WaitForLocalExecution', // Or 'WaitForEffectsCert'
+                options: {
+                    showEffects: true // Request effects to potentially see created objects
+                }
+            });
+            console.log("Minting transaction submitted. Digest:", result.digest);
+
+
+            // Wait for confirmation (optional but recommended)
+            // Try awaitTransactionConfirmation
+            // await client.awaitTransactionConfirmation(blockIdAndBlock.blockId);
+            // console.log("Minting transaction included.");
+
+            // 6. Wait for Transaction Confirmation using waitForTransaction
+             await client.waitForTransaction({
+                 digest: result.digest,
+                 options: { showEffects: true } // Optional: fetch effects again after waiting
+            });
+            console.log("Minting transaction included and effects observable.");
+
+
+            // Retrieve transaction details to get digest (if needed)
+            // const txDetails = await client.getTransaction({ transactionId: blockIdAndBlock.blockId });
+            // transactionDigest = txDetails.transactionId; // Adjust based on actual SDK response
+            // transactionDigest = blockIdAndBlock.blockId; // Use block ID as digest for now
+            transactionDigest = result.digest; // Assign the digest from the result
+
+
+        } catch (txError: any) {
+            console.error("IOTA Transaction failed:", txError);
+            // Avoid sending detailed SDK errors to the client for security
+            return res.status(500).json({ error: `Failed to mint NFT on-chain. Please try again later.` });
+        }
+        
+        // 6. Return Success Response
         return res.status(200).json({ 
-            message: "Verification initiated. FDC requests submitted.", 
-            validationId: validationId 
+            message: "Verification successful. NFT minted.", 
+            transactionDigest: transactionDigest, 
+            mintedAmountGrams: amountGramsCo2e
         });
 
     } else {

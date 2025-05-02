@@ -309,7 +309,7 @@ export default function MarketplacePage() {
     }, [fetchListingIds, fetchObjectsBatch, client, error]); // Add client and error dependencies
 
     // Initial load and refetch trigger
-    useEffect(() => {
+  useEffect(() => {
         if (client) { // Only load if client is available
              loadMarketplaceData();
         }
@@ -320,8 +320,8 @@ export default function MarketplacePage() {
     // --- Action Confirmation Polling ---
     useEffect(() => {
         if (!actionTxDigest || !isWaitingForConfirmation || !client) {
-            return;
-        }
+          return;
+      }
 
         let intervalId: NodeJS.Timeout | undefined;
         let attempts = 0;
@@ -373,7 +373,7 @@ export default function MarketplacePage() {
 
     }, [actionTxDigest, isWaitingForConfirmation, client, loadMarketplaceData]);
 
-    // --- Buy Item Logic ---
+  // --- Buy Item Logic ---
     const handleBuy = useCallback(async (listing: CombinedListing) => {
         if (!client || !account || !marketplacePackageId) {
             toast.error("Client or account not available.");
@@ -441,7 +441,7 @@ export default function MarketplacePage() {
         }
     }, [client, account, marketplacePackageId, signAndExecuteTransaction, isTxPending, isWaitingForConfirmation]);
 
-    // --- Cancel Listing Logic ---
+  // --- Cancel Listing Logic ---
      const handleCancel = useCallback((listing: CombinedListing) => {
         if (!client || !account || !marketplacePackageId) {
             toast.error("Client or account not available.");
@@ -498,34 +498,34 @@ export default function MarketplacePage() {
 
     // --- Render Logic ---
 
-    const handleLoadMore = () => {
+  const handleLoadMore = () => {
         setDisplayCount(prev => Math.min(prev + ITEMS_PER_PAGE, listings.length));
-    };
+  };
 
     const isLoadingAction = isTxPending || isWaitingForConfirmation;
     const activeListings = listings.filter(l => !l.fetchError);
     const erroredListings = listings.filter(l => l.fetchError);
 
-    return (
-        <TooltipProvider delayDuration={100}>
-            <div className="space-y-6">
+  return (
+    <TooltipProvider delayDuration={100}>
+      <div className="space-y-6">
                 <h1 className="text-3xl font-bold tracking-tight">IOTA Marketplace</h1>
-                <p className="text-muted-foreground">
+        <p className="text-muted-foreground">
                     Browse and purchase items listed on the IOTA network.
-                </p>
+        </p>
 
                 {/* Loading Skeletons */}
                 {isLoading && activeListings.length === 0 && erroredListings.length === 0 && (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                        {Array.from({ length: 4 }).map((_, i) => (
-                            <Card key={i}>
-                                <CardHeader><Skeleton className="aspect-square rounded-md mb-2" /><Skeleton className="h-5 w-3/4 mb-1" /><Skeleton className="h-3 w-1/2" /></CardHeader>
-                                <CardContent><Skeleton className="h-3 w-full" /></CardContent>
-                                <CardFooter className="justify-end"><Skeleton className="h-8 w-16" /></CardFooter>
-                            </Card>
-                        ))}
-                    </div>
-                )}
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <Card key={i}>
+                <CardHeader><Skeleton className="aspect-square rounded-md mb-2" /><Skeleton className="h-5 w-3/4 mb-1" /><Skeleton className="h-3 w-1/2" /></CardHeader>
+                <CardContent><Skeleton className="h-3 w-full" /></CardContent>
+                <CardFooter className="justify-end"><Skeleton className="h-8 w-16" /></CardFooter>
+              </Card>
+            ))}
+          </div>
+        )}
 
                 {/* Loading Indicator Text (if loading but some items already shown) */}
                  {isLoading && (activeListings.length > 0 || erroredListings.length > 0) && (
@@ -535,11 +535,11 @@ export default function MarketplacePage() {
 
                 {/* Global Error Display */}
                 {error && (
-                    <p className="text-center text-red-500">
+          <p className="text-center text-red-500">
                         Error: {error}
                         <Button onClick={loadMarketplaceData} variant="outline" size="sm" className="ml-2">Retry</Button>
-                    </p>
-                )}
+          </p>
+        )}
 
                 {/* Listings Grid */}
                 {!isLoading && activeListings.length === 0 && erroredListings.length === 0 && !error && (
@@ -547,7 +547,7 @@ export default function MarketplacePage() {
                 )}
 
                 {(activeListings.length > 0 || erroredListings.length > 0) && (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                         {/* Display active listings */}
                         {activeListings.slice(0, displayCount).map((item) => {
                             const isActionInProgress = isLoadingAction && actionListingId === item.listingId;
@@ -562,77 +562,77 @@ export default function MarketplacePage() {
                                 buttonText = isCurrentAction ? "Buying..." : "Buy Now";
                             }
 
-                            return (
+                return (
                                 <Card key={item.listingId}>
-                                    <CardHeader>
-                                        <div className="aspect-square bg-muted rounded-md mb-2 flex items-center justify-center overflow-hidden">
-                                            <img
+                    <CardHeader>
+                      <div className="aspect-square bg-muted rounded-md mb-2 flex items-center justify-center overflow-hidden">
+                         <img 
                                                 src={item.metadata?.imageUrl || "/placeholder-nft.jpg"} // Use fetched URL or fallback
                                                 alt={item.metadata?.name || `Token #${item.tokenId.substring(0, 6)}...`}
-                                                className="object-contain w-full h-full"
+                              className="object-contain w-full h-full" 
                                                 onError={(e) => (e.currentTarget.src = "/placeholder-nft.jpg")} // Fallback on image load error
-                                            />
-                                        </div>
+                          />
+                      </div>
                                         <CardTitle className="text-lg truncate" title={item.metadata?.name || `Token #${item.tokenId}`}>
                                             {item.metadata?.name || `Token #${item.tokenId.substring(0, 10)}...`}
                                         </CardTitle>
-                                        <CardDescription>
+                      <CardDescription>
                                             Price: {item.formattedPrice}
                                             {/* Add USD price here if implemented later */}
-                                        </CardDescription>
-                                    </CardHeader>
-                                    <CardContent>
+                      </CardDescription> 
+                    </CardHeader>
+                    <CardContent>
                                         <p className="text-xs text-muted-foreground mb-1 line-clamp-2" title={item.metadata?.description}>
                                             {item.metadata?.description || "No description."}
                                         </p>
-                                        <Tooltip>
-                                            <TooltipTrigger asChild>
-                                                <p className="text-xs text-muted-foreground truncate cursor-help" title={item.seller}>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                             <p className="text-xs text-muted-foreground truncate cursor-help" title={item.seller}> 
                                                     Seller: {item.seller.substring(0, 10)}...{item.seller.substring(item.seller.length - 4)}
-                                                </p>
-                                            </TooltipTrigger>
+                              </p>
+                          </TooltipTrigger>
                                             <TooltipContent><p>{item.seller}</p></TooltipContent>
-                                        </Tooltip>
-                                    </CardContent>
-                                    <CardFooter className="justify-end">
-                                        {isOwnedByCurrentUser ? (
-                                            <Tooltip>
-                                                <TooltipTrigger asChild>
+                        </Tooltip>
+                    </CardContent>
+                    <CardFooter className="justify-end">
+                       {isOwnedByCurrentUser ? (
+                           <Tooltip>
+                             <TooltipTrigger asChild>
                                                     <span> {/* Span needed for disabled button tooltip */}
-                                                        <Button
-                                                            variant="destructive"
-                                                            size="sm"
+                                 <Button 
+                                   variant="destructive"
+                                   size="sm" 
                                                             onClick={() => handleCancel(item)}
                                                             disabled={isLoadingAction || !account}
                                                             style={{ pointerEvents: (isLoadingAction || !account) ? 'none' : 'auto' }}
                                                         >
                                                             {buttonText}
-                                                        </Button>
-                                                    </span>
-                                                </TooltipTrigger>
+                                 </Button> 
+                               </span>
+                             </TooltipTrigger>
                                                 <TooltipContent><p>Remove this listing.</p></TooltipContent>
-                                            </Tooltip>
-                                        ) : (
-                                            <Tooltip>
-                                                <TooltipTrigger asChild>
+                           </Tooltip>
+                       ) : (
+                           <Tooltip>
+                             <TooltipTrigger asChild>
                                                     <span> {/* Span needed for disabled button tooltip */}
-                                                        <Button
-                                                            size="sm"
+                                 <Button 
+                                   size="sm" 
                                                             onClick={() => handleBuy(item)}
                                                             disabled={isLoadingAction || !account}
                                                             style={{ pointerEvents: (isLoadingAction || !account) ? 'none' : 'auto' }}
                                                         >
                                                             {buttonText}
-                                                        </Button>
-                                                    </span>
-                                                </TooltipTrigger>
+                                 </Button> 
+                               </span>
+                             </TooltipTrigger>
                                                 <TooltipContent><p>Buy for {item.formattedPrice}</p></TooltipContent>
-                                            </Tooltip>
-                                        )}
-                                    </CardFooter>
-                                </Card>
-                            );
-                        })}
+                            </Tooltip>
+                       )}
+                    </CardFooter>
+                  </Card>
+                );
+              })}
 
                          {/* Display errored listings */}
                         {erroredListings.map(item => (
@@ -648,20 +648,20 @@ export default function MarketplacePage() {
                                  <CardFooter/> {/* Empty footer to maintain layout */}
                             </Card>
                         ))}
-                    </div>
+            </div>
                 )}
 
-
+            
                 {/* Load More Button */}
                 {activeListings.length > displayCount && !isLoading && (
-                    <div className="text-center mt-6">
+              <div className="text-center mt-6">
                         <Button onClick={handleLoadMore} variant="secondary" disabled={isLoading}>
                             Load More ({listings.length - displayCount} remaining)
-                        </Button>
-                    </div>
-                )}
+                </Button>
+        </div>
+            )}
 
-            </div>
-        </TooltipProvider>
-    );
+    </div>
+    </TooltipProvider>
+  );
 }

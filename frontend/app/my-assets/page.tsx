@@ -144,15 +144,17 @@ export default function MyAssetsPage() {
             setIsDisplayLoading(true);
             setError(null);
             try {
-                // Use parameter object with the correct type
-                const response = await client.getObject({ id: displayObjectId });
+                // Use parameter object with the correct type AND fetch options
+                const response = await client.getObject({
+                    id: displayObjectId,
+                    options: { showContent: true, showType: true } // Request content
+                });
                 if (response?.data) {
-                    // Cast to unknown first, then try to access expected fields safely
                     const displayDataRaw = response.data as unknown;
                     console.log("Raw Display data fetched:", displayDataRaw);
 
-                    // Assuming data has a 'fields' property based on Move object structure
-                    const potentialFields = (displayDataRaw as any)?.fields;
+                    // Try accessing fields directly under content (now that we requested it)
+                    const potentialFields = (displayDataRaw as any)?.content?.fields;
 
                     if (potentialFields && typeof potentialFields === 'object') {
                          setCollectionDisplayData({ fields: potentialFields });

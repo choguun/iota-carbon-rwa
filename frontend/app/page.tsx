@@ -317,62 +317,6 @@ export default function MarketplacePage() {
     }, [client]); // Reload if client instance changes (e.g., network switch)
 
 
-    // --- Action Confirmation Polling ---
-    useEffect(() => {
-        if (!actionTxDigest || !isWaitingForConfirmation || !client) {
-          return;
-      }
-
-        let intervalId: NodeJS.Timeout | undefined;
-        let attempts = 0;
-        const maxAttempts = 30; // Poll for ~1 minute
-
-        const poll = async () => {
-            console.log(`Polling transaction ${actionTxDigest}, attempt ${attempts + 1}`);
-            attempts++;
-            try {
-                const receipt = await client.getTransaction({ transactionId: actionTxDigest });
-                const isSuccess = receipt?.blockId !== undefined; // Basic success check
-
-                if (isSuccess) {
-                    toast.success(`Transaction confirmed: ${actionTxDigest}`);
-                    setIsWaitingForConfirmation(false);
-                    setActionTxDigest(undefined);
-                    setActionListingId(null);
-                    setCurrentAction(null);
-                    loadMarketplaceData(); // Refresh list on success
-                    clearInterval(intervalId);
-                } else if (attempts >= maxAttempts) {
-                    toast.warning(`Transaction confirmation timed out for ${actionTxDigest}. Please check manually.`);
-                    setIsWaitingForConfirmation(false);
-                     setActionTxDigest(undefined); // Clear digest even on timeout
-                     setActionListingId(null);
-                     setCurrentAction(null);
-                    clearInterval(intervalId);
-                }
-                 // Handle specific failure cases if the receipt provides them
-                 // else if (receipt?.failureReason) { ... }
-
-            } catch (error) {
-                console.error(`Error polling transaction ${actionTxDigest}:`, error);
-                if (attempts >= maxAttempts) {
-                    toast.error(`Failed to get confirmation status for ${actionTxDigest}.`);
-                    setIsWaitingForConfirmation(false);
-                    setActionTxDigest(undefined);
-                    setActionListingId(null);
-                    setCurrentAction(null);
-                    clearInterval(intervalId);
-                }
-            }
-        };
-
-        poll(); // Initial check
-        intervalId = setInterval(poll, 2000); // Poll every 2s
-
-        return () => clearInterval(intervalId); // Cleanup
-
-    }, [actionTxDigest, isWaitingForConfirmation, client, loadMarketplaceData]);
-
   // --- Buy Item Logic ---
     const handleBuy = useCallback(async (listing: CombinedListing) => {
         if (!client || !account || !marketplacePackageId) {

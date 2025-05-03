@@ -1,7 +1,6 @@
 import React from 'react';
 import Link from 'next/link';
 import ConnectWallet from './ConnectWallet'; // Assuming ConnectWallet is in the same directory
-import { WalletStatus } from './WalletStatus';
 
 const Navbar = () => {
   return (

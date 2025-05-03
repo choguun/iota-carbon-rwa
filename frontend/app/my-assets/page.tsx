@@ -378,7 +378,10 @@ export default function MyAssetsPage() {
 
              try {
                  // Use parameter object with correct parameter name
-                 const txDetails = await client.getTransactionBlock({ digest: retirementTxDigest });
+                 const txDetails = await client.getTransactionBlock({ 
+                    digest: retirementTxDigest,
+                    options: { showEffects: true }
+                });
 
                  // Check status based on SDK structure - VERIFY THIS PATH
                  const status = (txDetails as any)?.effects?.status?.status; // Example path, adjust as needed

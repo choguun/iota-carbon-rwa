@@ -13,10 +13,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import Image from "next/image";
 import { Transaction } from '@iota/iota-sdk/transactions';
-import { Buffer } from 'buffer';
 import { bcs } from '@iota/iota-sdk/bcs';
 
-// TODO: Get correct Package IDs from environment variables
 const marketplacePackageId = process.env.NEXT_PUBLIC_MARKETPLACE_PACKAGE_ID || 'PLACEHOLDER_MARKETPLACE_PACKAGE_ID';
 const nftPackageId = process.env.NEXT_PUBLIC_PACKAGE_ID || 'PLACEHOLDER_NFT_PACKAGE_ID';
 const listingRegistryId = process.env.NEXT_PUBLIC_LISTING_REGISTRY_ID || 'PLACEHOLDER_REGISTRY_ID';
@@ -31,6 +29,7 @@ interface ListingFields {
     // nft: NftObjectContent; // The actual NFT object - fetching separately might be better
     price_micro_iota: string; // u64 as string
     seller: string; // address as string
+    nft: NftObjectContent;
 }
 
 // Structure for the content of a fetched Listing object
@@ -120,8 +119,7 @@ export default function MarketplacePage() {
     const [isWaitingForCancelConfirm, setIsWaitingForCancelConfirm] = useState(false);
 
     // State to hold user's IOTA coin objects
-    // TODO: Define a more specific Coin interface based on SDK response
-    const [userCoins, setUserCoins] = useState<any[]>([]);
+    const [userCoins, setUserCoins] = useState<IotaCoin[]>([]); // Use IotaCoin type
 
     // --- Data Fetching Logic --- //
 
@@ -281,9 +279,9 @@ export default function MarketplacePage() {
                          {
                              const fields: ListingFields = listingContent.fields;
                              console.log(`Listing ${listingId} Fields:`, fields); // Log the fields object
-                             const nftId = fields?.nft_id; // Still useful for identification/keys
+                             const nftId = fields?.nft_id; 
                              
-                             // Access nested NFT fields directly - ** ADJUST BASED ON LOG **
+                             // Access nested NFT fields directly using the updated ListingFields interface
                              const nestedNftFields = fields?.nft?.fields as CarbonCreditNftFields | undefined;
                              const nestedNftType = fields?.nft?.type as string | undefined;
 
@@ -472,124 +470,179 @@ export default function MarketplacePage() {
 
     // --- Actions --- //
 
-    // TODO: Implement coin splitting logic for handleBuy
     const handleBuy = useCallback(async (listing: MarketplaceListingData) => {
-        if (!client || !account || !account.address || !marketplacePackageId || marketplacePackageId === 'PLACEHOLDER_MARKETPLACE_PACKAGE_ID') {
-            toast.error("Client, account, or Marketplace Package ID not configured.");
+        if (!client || !account || !account.address || !marketplacePackageId || marketplacePackageId === 'PLACEHOLDER_MARKETPLACE_PACKAGE_ID' || !listingRegistryId || listingRegistryId === 'PLACEHOLDER_REGISTRY_ID') {
+            toast.error("Client, account, or contract details not configured.");
             return;
         }
-        if (buyingListingId || isTxPending) return; // Prevent multiple buys
+        // Use buyingListingId to prevent multiple clicks
+        if (buyingListingId || isTxPending) return; 
         if (account.address === listing.seller) {
              toast.warning("You cannot buy your own listing.");
              return;
          }
 
-        setBuyingListingId(listing.id);
+        setBuyingListingId(listing.id); // Mark which listing is being bought
         setBuyTxDigest(undefined);
         setIsWaitingForBuyConfirm(false);
-        toast.info(`Preparing to buy item ${listing.nftId.substring(0, 6)}...`);
-
+        
         try {
-            // Fetch user's coins first
-            const currentCoins = await fetchUserCoins(); // Assumes this returns IotaCoin[] or similar
-            if (currentCoins.length === 0) {
-                toast.error("Could not find any IOTA coins in your wallet.");
-                setBuyingListingId(null);
-                return;
-            }
-
-            // 2. Find a suitable coin
+            console.log("Initiating buy process, fetching coins...");
+            const currentCoins: IotaCoin[] = await fetchUserCoins();
             const requiredAmount = BigInt(listing.price_micro_iota || '0');
-            let paymentCoinInput: { type: 'object', objectId: string } | { type: 'split', objectId: string, amount: bigint } | null = null;
 
-            // Sort coins descending by balance to prioritize using larger coins first for splitting
-            const sortedCoins = currentCoins
-                .map((coin: IotaCoin): IotaCoin & { balanceBigInt: bigint } => ({ // Add type to coin parameter
-                    ...coin,
-                    balanceBigInt: BigInt(coin.balance || '0')
-                }))
-                // Add types to sort parameters
-                .sort((a: { balanceBigInt: bigint }, b: { balanceBigInt: bigint }) => Number(b.balanceBigInt - a.balanceBigInt));
-
-            for (const coin of sortedCoins) {
-                if (coin.balanceBigInt >= requiredAmount) {
-                    if (coin.balanceBigInt === requiredAmount) {
-                        // Found exact match
-                        paymentCoinInput = { type: 'object', objectId: coin.coinObjectId };
-                        console.log(`Found exact match coin: ${coin.coinObjectId}`);
-                    } else {
-                        // Found coin to split
-                        paymentCoinInput = { type: 'split', objectId: coin.coinObjectId, amount: requiredAmount };
-                        console.log(`Found coin to split: ${coin.coinObjectId}, balance: ${coin.balanceBigInt}, required: ${requiredAmount}`);
-                    }
-                    break; // Stop after finding the first suitable coin
-                }
-            }
-
-            if (!paymentCoinInput) {
-                // TODO: Implement merging logic if desired
-                toast.error(`Insufficient balance. No single coin found with at least ${Number(requiredAmount) / 1_000_000} IOTA.`);
-                setBuyingListingId(null);
+            if (currentCoins.length === 0) {
+                toast.error("No IOTA coins found in your wallet.");
+                setBuyingListingId(null); // Unset listing ID
                 return;
             }
 
-            // 3. Construct the transaction
-            const tx = new Transaction();
-            tx.setGasBudget(150_000_000); // May need higher budget for split
+            if (currentCoins.length === 1) {
+                // --- Single Coin Logic: Instruct User --- 
+                const singleCoin = { ...currentCoins[0], balanceBigInt: BigInt(currentCoins[0].balance || '0') };
+                console.log("Single coin found:", singleCoin);
 
-            let paymentCoinArg; // This will hold the argument for the moveCall
-
-            if (paymentCoinInput.type === 'split') {
-                // Command 0: Split Coin
-                // Assumes splitCoins takes the coin *object* and an array of amounts to split off
-                // Verify method name and argument structure with SDK docs!
-                const splitResult = tx.splitCoins(tx.object(paymentCoinInput.objectId), [tx.pure.u64(paymentCoinInput.amount)]);
-                // The payment coin is the result of this split command
-                paymentCoinArg = splitResult; 
-                console.log(`Prepared splitCoins command for ${paymentCoinInput.objectId}`);
-            } else {
-                // Use the exact match coin directly
-                paymentCoinArg = tx.object(paymentCoinInput.objectId);
-                console.log(`Using direct coin object: ${paymentCoinInput.objectId}`);
-            }
-
-            tx.moveCall({
-                target: `${marketplacePackageId}::marketplace::buy_item`,
-                arguments: [
-                    tx.object(listing.id), // The Listing object being bought
-                    paymentCoinArg                // The result of splitCoins or the direct coin object
-                ],
-                // typeArguments: [], // Likely none for buy_item
-            });
-
-            console.log("Constructed buy transaction with coin logic.");
-
-            // 4. Sign and Execute
-            signAndExecuteTransaction(
-                { transaction: tx },
-                {
-                    onSuccess: (result: { digest: TransactionId }) => {
-                        console.log("Buy tx submitted:", result);
-                        toast.success(`Buy transaction submitted: ${result.digest}. Waiting for confirmation...`);
-                        setBuyTxDigest(result.digest);
-                        setIsWaitingForBuyConfirm(true);
-                    },
-                    onError: (error: any) => {
-                        console.error("Buy transaction failed:", error);
-                        toast.error(`Buy failed: ${error.message || 'Unknown error'}`);
-                        setBuyingListingId(null); // Reset on error
-                    },
+                if (singleCoin.balanceBigInt < requiredAmount) {
+                    toast.error(`Insufficient balance. Wallet has ${Number(singleCoin.balanceBigInt) / 1_000_000} IOTA, need ${Number(requiredAmount) / 1_000_000} IOTA.`);
+                } else {
+                     // Sufficient balance, but only one coin - instruct to split
+                     toast.error("Your wallet has only one IOTA coin object. Please split it into at least two (e.g., using IOTA CLI or wallet tools) before buying, as one coin is needed for payment and another for gas.");
                 }
-            );
+                setBuyingListingId(null);
+                return; // Stop the buy process here
+
+            } else {
+                // --- Multiple Coins Logic: Proceed with purchase --- 
+                console.log("Multiple coins found. Proceeding with purchase.");
+                let paymentCoinArg; // To hold the coin object/result for the move call
+
+                let paymentCoinInput: { type: 'object', objectId: string } | { type: 'split', objectId: string, amount: bigint } | null = null;
+                const sortedCoins = currentCoins
+                    .map((coin): IotaCoin & { balanceBigInt: bigint } => ({
+                        ...coin,
+                        balanceBigInt: BigInt(coin.balance || '0')
+                    }))
+                    .sort((a, b) => Number(b.balanceBigInt - a.balanceBigInt));
+
+                for (const coin of sortedCoins) {
+                    if (coin.balanceBigInt >= requiredAmount) {
+                        if (coin.balanceBigInt === requiredAmount) {
+                            paymentCoinInput = { type: 'object', objectId: coin.coinObjectId };
+                            console.log(`Found exact match coin: ${coin.coinObjectId}`);
+                        } else {
+                            paymentCoinInput = { type: 'split', objectId: coin.coinObjectId, amount: requiredAmount };
+                            console.log(`Found coin to split: ${coin.coinObjectId}, balance: ${coin.balanceBigInt}, required: ${requiredAmount}`);
+                        }
+                        break;
+                    }
+                }
+
+                if (!paymentCoinInput) {
+                    toast.error(`Insufficient balance. No single coin found with at least ${Number(requiredAmount) / 1_000_000} IOTA.`);
+                    setBuyingListingId(null);
+                    return;
+                }
+
+                // Construct the transaction
+                const tx = new Transaction();
+                tx.setGasBudget(150_000_000); // Adjust as needed
+
+                if (paymentCoinInput.type === 'split') {
+                    const [splitPaymentCoin] = tx.splitCoins(tx.object(paymentCoinInput.objectId), [tx.pure.u64(paymentCoinInput.amount)]);
+                    paymentCoinArg = splitPaymentCoin;
+                    console.log(`Prepared splitCoins command for ${paymentCoinInput.objectId}`);
+                } else {
+                    paymentCoinArg = tx.object(paymentCoinInput.objectId);
+                     console.log(`Using direct coin object: ${paymentCoinInput.objectId}`);
+                }
+
+                tx.moveCall({
+                    target: `${marketplacePackageId}::marketplace::buy_item`,
+                    arguments: [
+                        tx.object(listingRegistryId), 
+                        tx.object(listing.id),      
+                        paymentCoinArg             
+                    ],
+                });
+
+                console.log("Constructed final buy transaction.");
+
+                // Sign and Execute
+                toast.info(`Submitting buy transaction for ${listing.nftId.substring(0, 6)}...`);
+                signAndExecuteTransaction(
+                    { transaction: tx }, 
+                    {
+                        onSuccess: (result: { digest: TransactionId }) => {
+                            console.log("Buy tx submitted:", result);
+                            toast.success(`Buy transaction submitted: ${result.digest}. Waiting for confirmation...`);
+                            setBuyTxDigest(result.digest);
+                            setIsWaitingForBuyConfirm(true); // Use this simple state
+                        },
+                        onError: (error: any) => {
+                            console.error("Buy transaction failed:", error);
+                            toast.error(`Buy failed: ${error.message || 'Unknown error'}`);
+                            setBuyingListingId(null); 
+                        },
+                    }
+                );
+            }
 
         } catch (error: unknown) {
             const errorMessage = error instanceof Error ? error.message : String(error);
-            console.error("Error constructing/signing buy transaction:", error);
+            console.error("Error during buy process stage:", error);
             toast.error(`Error during buy process: ${errorMessage}`);
-            setBuyingListingId(null); // Reset on error
+            setBuyingListingId(null);
         }
 
-    }, [client, account, marketplacePackageId, buyingListingId, isTxPending, signAndExecuteTransaction, fetchUserCoins]);
+    }, [client, account, marketplacePackageId, listingRegistryId, buyingListingId, isTxPending, signAndExecuteTransaction, fetchUserCoins]);
+
+    // --- Polling for Buy Transaction --- //
+    useEffect(() => {
+        if (!isWaitingForBuyConfirm || !buyTxDigest || !client) return; // Use simple state
+        console.log(`Polling for buy tx: ${buyTxDigest}`);
+        const startTime = Date.now();
+        const timeoutDuration = 60000; // 60 seconds timeout
+
+        const intervalId = setInterval(async () => {
+            if (Date.now() - startTime > timeoutDuration) {
+                toast.warning("Purchase confirmation timed out. Please check explorer.");
+                clearInterval(intervalId);
+                setBuyTxDigest(undefined);
+                setIsWaitingForBuyConfirm(false);
+                setBuyingListingId(null);
+                return;
+            }
+
+            try {
+                const txDetails = await client.getTransactionBlock({ 
+                    digest: buyTxDigest, 
+                    options: { showEffects: true } // Ensure effects are fetched
+                });
+                const status = (txDetails as any)?.effects?.status?.status;
+
+                if (status === 'success') {
+                    toast.success(`Item purchased successfully! Tx: ${buyTxDigest.substring(0, 6)}...`);
+                    clearInterval(intervalId);
+                    setBuyTxDigest(undefined);
+                    setIsWaitingForBuyConfirm(false);
+                    setBuyingListingId(null);
+                    fetchListings(); // Refresh listings
+                    fetchUserCoins(); // Refresh coins 
+                } else if (status === 'failure') {
+                    const errorMsg = (txDetails as any)?.effects?.status?.error || 'Unknown reason';
+                    toast.error(`Purchase transaction failed: ${errorMsg}`);
+                    clearInterval(intervalId);
+                    setBuyTxDigest(undefined);
+                    setIsWaitingForBuyConfirm(false);
+                    setBuyingListingId(null);
+                }
+            } catch (error: unknown) {
+                console.warn("Polling error for buy tx:", error);
+            }
+        }, 3000);
+
+        return () => clearInterval(intervalId);
+    }, [isWaitingForBuyConfirm, buyTxDigest, client, fetchListings, fetchUserCoins]); 
 
     const handleCancelListing = useCallback(async (listing: MarketplaceListingData) => {
         if (!client || !account || !account.address || !marketplacePackageId || marketplacePackageId === 'PLACEHOLDER_MARKETPLACE_PACKAGE_ID' || !listingRegistryId || listingRegistryId === 'PLACEHOLDER_REGISTRY_ID') {
@@ -656,6 +709,7 @@ export default function MarketplacePage() {
         const isMyListing = account?.address === listing.seller;
 
         // Determine button state based on action type (buy vs cancel)
+        // Restore simple logic
         const isProcessing = !!buyingListingId || !!cancellingListingId || isTxPending || isWaitingForBuyConfirm || isWaitingForCancelConfirm;
         // Explicitly check if fetchError is truthy (exists)
         const buyButtonDisabled = isProcessing || isMyListing || !!listing.fetchError; 
@@ -716,6 +770,7 @@ export default function MarketplacePage() {
                             onClick={() => handleBuy(listing)}
                             disabled={buyButtonDisabled}
                         >
+                           {/* Restore simple button text */}
                            {isBuyingThis ? (isWaitingForBuyConfirm ? 'Confirming...' : 'Processing...') : 'Buy Now'}
                         </Button>
                     )}
@@ -765,6 +820,7 @@ export default function MarketplacePage() {
                  </Button>
              </div>
 
+            
             {/* Listings Grid */}
              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
                  {isLoading

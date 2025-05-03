@@ -27,6 +27,7 @@ import { Buffer } from 'buffer'; // Import Buffer for hex conversion
 // Assuming network variables are loaded correctly (e.g., from .env.local)
 const nftPackageId = process.env.NEXT_PUBLIC_PACKAGE_ID;
 const displayObjectId = process.env.NEXT_PUBLIC_DISPLAY_OBJECT_ID; // Required!
+const listingRegistryId = process.env.NEXT_PUBLIC_LISTING_REGISTRY_ID; // Read registry ID
 
 // --- IOTA Data Structures ---
 
@@ -617,7 +618,7 @@ export default function MyAssetsPage() {
 
 
              {/* Listing Dialog - Use Shadcn Dialog components */}
-              {nftToList && nftPackageId && (
+              {nftToList && nftPackageId && listingRegistryId && (
                  <Dialog open={isListDialogOpen} onOpenChange={setIsListDialogOpen}>
                      {/* Optional: DialogTrigger could be the 'List for Sale' button if not handled via state */}
                      {/* <DialogTrigger asChild><Button>...</Button></DialogTrigger> */}
@@ -630,6 +631,7 @@ export default function MyAssetsPage() {
                              nft={{ id: nftToList.id, metadata: { name: nftToList.metadata?.name } }} // Pass only needed data
                              onListingComplete={handleListingComplete}
                              marketplacePackageId={nftPackageId} // Pass the marketplace package ID
+                             listingRegistryId={listingRegistryId} // Pass the Listing Registry ID
                          />
                      </DialogContent>
                  </Dialog>

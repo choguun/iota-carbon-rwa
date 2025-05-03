@@ -23,6 +23,7 @@ interface ListItemDialogProps {
     nft: NftData;
     onListingComplete: () => void;
     marketplacePackageId: string; // Pass the package ID where the marketplace module resides
+    listingRegistryId: string; // Add ListingRegistry Object ID prop
 }
 
 // Helper to convert display amount to base units (assuming 6 decimals like IOTA)
@@ -40,7 +41,7 @@ const toBaseUnits = (amount: string, decimals: number = 6): bigint => {
 };
 
 
-export default function ListItemDialog({ nft, onListingComplete, marketplacePackageId }: ListItemDialogProps) {
+export default function ListItemDialog({ nft, onListingComplete, marketplacePackageId, listingRegistryId }: ListItemDialogProps) {
     const [price, setPrice] = useState('');
     const [isListing, setIsListing] = useState(false);
     const [listingTxDigest, setListingTxDigest] = useState<TransactionId | undefined>(); // Use TransactionId
@@ -88,6 +89,11 @@ export default function ListItemDialog({ nft, onListingComplete, marketplacePack
             return;
         }
 
+        if (!listingRegistryId) {
+            toast.error("Listing Registry ID not configured.");
+            setIsListing(false);
+            return;
+        }
 
         setIsListing(true);
         setListingTxDigest(undefined);
@@ -104,8 +110,9 @@ export default function ListItemDialog({ nft, onListingComplete, marketplacePack
             tx.moveCall({
                 target: `${marketplacePackageId}::marketplace::list_item`, // Use correct function name
                 arguments: [
-                    tx.object(nft.id),             // Argument 0: The NFT object (by ID)
-                    tx.pure.u64(priceBaseUnits)    // Argument 1: The price (u64)
+                    tx.object(listingRegistryId),  // Argument 0: The ListingRegistry object (by ID)
+                    tx.object(nft.id),             // Argument 1: The NFT object (by ID)
+                    tx.pure.u64(priceBaseUnits)    // Argument 2: The price (u64)
                 ],
                 // typeArguments: [] // If the function has type arguments
             });
@@ -151,8 +158,14 @@ export default function ListItemDialog({ nft, onListingComplete, marketplacePack
             attempts++;
             try {
                 // Use getTransactionBlock with digest
-                const txDetails = await client.getTransactionBlock({ digest: listingTxDigest });
+                const txDetails = await client.getTransactionBlock({
+                    digest: listingTxDigest,
+                    options: { showEffects: true }
+                });
  
+                // --- Log the full response to inspect its structure --- 
+                console.log("Full txDetails:", JSON.stringify(txDetails, null, 2));
+
                 // Check status based on SDK structure - VERIFY THIS PATH
                 const status = (txDetails as any)?.effects?.status?.status; // Example path, adjust as needed
  

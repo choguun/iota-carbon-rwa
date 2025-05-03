@@ -242,6 +242,7 @@ app.post('/request-attestation', asyncHandler(async (req: Request, res: Response
         let transactionDigest: string | undefined;
 
         try {
+            console.log(`Connecting to node: ${iotaNodeUrl}`);
             const client = new IotaClient({ url: iotaNodeUrl });
 
             // Generate KeyPair from private key
@@ -255,6 +256,22 @@ app.post('/request-attestation', asyncHandler(async (req: Request, res: Response
             }
             const keypair = Ed25519Keypair.fromSecretKey(deployerPrivateKeyBytes);
      
+            // --- DIAGNOSTIC: Try fetching input objects --- 
+            try {
+                console.log(`Attempting to fetch AdminCap object: ${iotaAdminCapId}`);
+                const adminCapInfo = await client.getObject({ id: iotaAdminCapId });
+                console.log("AdminCap Info:", JSON.stringify(adminCapInfo, null, 2));
+                console.log(`Attempting to fetch VerificationRegistry object: ${iotaVerificationRegistryId}`);
+                const registryInfo = await client.getObject({ id: iotaVerificationRegistryId });
+                console.log("Registry Info:", JSON.stringify(registryInfo, null, 2));
+            } catch (getObjectError: any) {
+                console.error("DIAGNOSTIC FAILED: Error fetching input objects.", getObjectError);
+                // If this fails with 403, the issue is likely node access/permissions for reading these objects.
+                // Re-throw the error to stop execution here if object fetching fails.
+                throw new Error(`Failed to fetch prerequisite objects: ${getObjectError.message}`);
+            }
+            // --- END DIAGNOSTIC ---
+
             const tx = new Transaction();
             tx.setGasBudget(100_000_000); // Set gas budget on the transaction
 
@@ -274,8 +291,8 @@ app.post('/request-attestation', asyncHandler(async (req: Request, res: Response
                 typeArguments: []
             });
 
-
-            console.log("Constructed mint_nft transaction:", JSON.stringify(tx.toJSON()));
+            // Log the final transaction JSON structure before sending
+            console.log("Constructed mint_nft transaction JSON:", JSON.stringify(tx.toJSON(), null, 2));
 
             // 5. Sign and Submit the Prepared Transaction
             // const blockIdAndBlock = await deployerAccount.signAndSubmitTransaction(preparedTx);

@@ -19,15 +19,22 @@ import {
     Dialog,
     DialogContent,
     DialogHeader,
-    DialogTitle
+    DialogTitle,
+    DialogDescription
 } from "@/components/ui/dialog";
 import { Transaction } from '@iota/iota-sdk/transactions'; // Import Transaction class
 import { Buffer } from 'buffer'; // Import Buffer for hex conversion
 
 // Assuming network variables are loaded correctly (e.g., from .env.local)
-const nftPackageId = process.env.NEXT_PUBLIC_PACKAGE_ID;
+const nftPackageId = process.env.NEXT_PUBLIC_PACKAGE_ID || 'PLACEHOLDER_NFT_PACKAGE_ID';
+const marketplacePackageId = process.env.NEXT_PUBLIC_MARKETPLACE_PACKAGE_ID || 'PLACEHOLDER_MARKETPLACE_PACKAGE_ID';
 const displayObjectId = process.env.NEXT_PUBLIC_DISPLAY_OBJECT_ID; // Required!
 const listingRegistryId = process.env.NEXT_PUBLIC_LISTING_REGISTRY_ID; // Read registry ID
+
+// Placeholder image URLs based on activity type
+const CYCLING_IMAGE_URL = "/images/cycling_placeholder.jpg"; // Replace with actual URL or path
+const WALKING_IMAGE_URL = "/images/walking_placeholder.jpg"; // Replace with actual URL or path
+const DEFAULT_NFT_IMAGE_URL = "/images/default_nft_placeholder.jpg"; // Fallback
 
 // --- IOTA Data Structures ---
 
@@ -318,7 +325,7 @@ export default function MyAssetsPage() {
                      id: id, // Use the object ID
                       metadata: {
                           // Fields from Collection Display Object
-                          name: collectionDisplayData?.fields?.name ?? 'Unknown Collection Name',
+                          name: collectionDisplayData?.fields?.name ?? 'Verified Carbon Credit',
                           description: collectionDisplayData?.fields?.description ?? 'No collection description.',
                           // Construct imageUrl (assuming display has template like image_url: ".../{id}.png")
                           imageUrl: collectionDisplayData?.fields?.image_url
@@ -503,12 +510,12 @@ export default function MyAssetsPage() {
                 </CardDescription>
             </CardHeader>
             <CardContent className="flex-grow">
-                {nft.metadata?.imageUrl ? (
+                {nft.metadata?.activity_type ? (
                     <Image
-                        src={nft.metadata.imageUrl}
+                        src={nft.metadata.activity_type === 1 ? CYCLING_IMAGE_URL : WALKING_IMAGE_URL}
                         alt={nft.metadata.name || 'NFT Image'}
-                        width={400} // Example intrinsic width
-                        height={240} // Example intrinsic height
+                        width={300} // Example intrinsic width
+                        height={300} // Example intrinsic height
                         onError={(e) => { (e.target as HTMLImageElement).src = '/placeholder-image.png'; }} // Fallback image
                         className="w-full h-48 object-cover rounded"
                         priority={false} // Lazy load images below the fold
@@ -519,9 +526,9 @@ export default function MyAssetsPage() {
                 <div className="mt-4 space-y-1 text-sm">
                      {/* Display NFT specific data */}
                      {nft.metadata?.amount_kg_co2e !== undefined && <p><strong>Amount:</strong> {(nft.metadata.amount_kg_co2e / 1000).toLocaleString()} kg CO₂e</p>}
-                     {nft.metadata?.activity_type !== undefined && <p><strong>Activity Code:</strong> {nft.metadata.activity_type}</p>}
+                     {nft.metadata?.activity_type !== undefined && <p><strong>Transportation:</strong> {nft.metadata.activity_type === 1 ? 'Cycling' : 'Walking'}</p>}
                      {nft.metadata?.issuedTimestamp !== undefined && <p><strong>Issued:</strong> {new Date(nft.metadata.issuedTimestamp).toLocaleString()}</p>}
-                     {nft.metadata?.verification_id_hex && <p className="text-xs text-muted-foreground truncate" title={nft.metadata.verification_id_hex}><strong>Verification:</strong> {nft.metadata.verification_id_hex.substring(0,10)}...</p>}
+                     {nft.metadata?.verification_id_hex && <p className="text-xs text-muted-foreground truncate" title={nft.metadata.verification_id_hex}><strong>Verification:</strong> {nft.metadata.verification_id_hex}</p>}
  
                      {/* Render attributes if populated */}
                     {nft.metadata?.attributes && nft.metadata.attributes.length > 0 && (
@@ -593,7 +600,7 @@ export default function MyAssetsPage() {
 
             {/* Loading State */}
             {isLoading && (
-                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                 <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4">
                      {[...Array(3)].map((_, i) => (
                          <Card key={i}>
                              <CardHeader><Skeleton className="h-6 w-3/4" /></CardHeader>
@@ -609,7 +616,7 @@ export default function MyAssetsPage() {
 
             {/* NFT Grid */}
             {!isLoading && ownedNfts.length > 0 && (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-6">
                     {ownedNfts.map(renderNftCard)}
                 </div>
             )}
@@ -623,9 +630,7 @@ export default function MyAssetsPage() {
              {/* Listing Dialog - Use Shadcn Dialog components */}
               {nftToList && nftPackageId && listingRegistryId && (
                  <Dialog open={isListDialogOpen} onOpenChange={setIsListDialogOpen}>
-                     {/* Optional: DialogTrigger could be the 'List for Sale' button if not handled via state */}
-                     {/* <DialogTrigger asChild><Button>...</Button></DialogTrigger> */}
-                     <DialogContent>
+                    <DialogContent>
                          <DialogHeader>
                              <DialogTitle>List NFT for Sale</DialogTitle>
                          </DialogHeader>
@@ -636,7 +641,7 @@ export default function MyAssetsPage() {
                              marketplacePackageId={nftPackageId} // Pass the marketplace package ID
                              listingRegistryId={listingRegistryId} // Pass the Listing Registry ID
                          />
-                     </DialogContent>
+                    </DialogContent>
                  </Dialog>
              )}
         </div>

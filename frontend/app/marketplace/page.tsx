@@ -20,6 +20,11 @@ const nftPackageId = process.env.NEXT_PUBLIC_PACKAGE_ID || 'PLACEHOLDER_NFT_PACK
 const listingRegistryId = process.env.NEXT_PUBLIC_LISTING_REGISTRY_ID || 'PLACEHOLDER_REGISTRY_ID';
 const nftDisplayObjectId = process.env.NEXT_PUBLIC_DISPLAY_OBJECT_ID || 'PLACEHOLDER_NFT_DISPLAY_ID';
 
+// Placeholder image URLs based on activity type
+const CYCLING_IMAGE_URL = "/images/cycling_placeholder.jpg"; // Replace with actual URL or path
+const WALKING_IMAGE_URL = "/images/walking_placeholder.jpg"; // Replace with actual URL or path
+const DEFAULT_NFT_IMAGE_URL = "/images/default_nft_placeholder.jpg"; // Fallback
+
 // --- Data Structures --- //
 
 // Structure matching the fields in the Listing Move struct
@@ -720,7 +725,17 @@ export default function MarketplacePage() {
         const priceMicroIota = BigInt(listing.price_micro_iota || '0');
         const priceInIota = (Number(priceMicroIota) / 1_000_000).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 });
 
-  return (
+        // --- Determine Image URL based on activity_type --- 
+        let imageUrl = DEFAULT_NFT_IMAGE_URL; // Start with default
+        const activityType = listing.nftData?.fields?.activity_type;
+        if (activityType === 1) { // Assuming 1 = Cycling
+            imageUrl = CYCLING_IMAGE_URL;
+        } else if (activityType === 2) { // Assuming 2 = Walking
+            imageUrl = WALKING_IMAGE_URL;
+        }
+        // We are ignoring the display?.image_url template for now
+
+        return (
             <Card key={listing.id} className="flex flex-col">
                 <CardHeader>
                     <CardTitle className="truncate" title={listing.nftData?.display?.name || 'NFT'}>
@@ -731,19 +746,16 @@ export default function MarketplacePage() {
                     </CardDescription>
                 </CardHeader>
                 <CardContent className="flex-grow">
-                    {listing.nftData?.display?.image_url ? (
-                        <Image
-                            src={listing.nftData.display.image_url}
-                            alt={listing.nftData.display.name || 'NFT Image'}
-                            width={400}
-                            height={240}
-                            className="w-full h-48 object-cover rounded"
-                            priority={false}
-                            onError={(e) => { (e.target as HTMLImageElement).src = '/placeholder-image.png'; }}
-                        />
-                    ) : (
-                        <div className="w-full h-48 bg-secondary rounded flex items-center justify-center text-muted-foreground">No Image</div>
-                    )}
+                    {/* Use the determined imageUrl */}
+                    <Image
+                        src={imageUrl} 
+                        alt={listing.nftData?.display?.name || 'NFT Image'}
+                        width={400}
+                        height={240}
+                        className="w-full h-48 object-cover rounded"
+                        priority={false}
+                        onError={(e) => { (e.target as HTMLImageElement).src = '/placeholder-image.png'; }}
+                    />
                     <div className="mt-4 space-y-1 text-sm">
                          {/* Display fetch error if present */}
                          {listing.fetchError && <p className="text-red-500 text-xs font-semibold mb-2">Error loading listing: {listing.fetchError}</p>}

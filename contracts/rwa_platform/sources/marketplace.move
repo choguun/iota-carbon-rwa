@@ -6,7 +6,7 @@ module rwa_platform::marketplace {
     use iota::object::{Self, UID, ID};
     use iota::transfer;
     use iota::tx_context::{Self, TxContext};
-    use std::vector;
+    use std::vector::{Self};
 
     // Import the NFT struct from the other module
     use rwa_platform::carbon_nft_manager::{CarbonCreditNFT};
@@ -17,7 +17,9 @@ module rwa_platform::marketplace {
     public struct ListingRegistry has key, store {
         id: UID,
         /// Maps active Listing object IDs to the seller's address.
-        active_listings: Table<ID, address>
+        active_listings: Table<ID, address>,
+        /// Stores the IDs of active listings for easy retrieval.
+        active_listing_ids: vector<ID>,
     }
 
     /// Represents an NFT listed for sale on the marketplace.
@@ -90,6 +92,8 @@ module rwa_platform::marketplace {
 
         // Add to registry
         table::add(&mut registry.active_listings, listing_id, sender);
+        // Add ID to the vector
+        vector::push_back(&mut registry.active_listing_ids, listing_id);
 
         // Emit event
         event::emit(ListingCreated {
@@ -149,6 +153,12 @@ module rwa_platform::marketplace {
 
         // Explicitly delete the Listing object's UID
         object::delete(listing_uid);
+
+        // Remove listing ID from the vector
+        let (found, index) = vector::index_of(&registry.active_listing_ids, &listing_obj_id);
+        if (found) {
+            vector::swap_remove(&mut registry.active_listing_ids, index);
+        }
     }
 
     /// Cancel a listing and get the NFT back.
@@ -190,6 +200,12 @@ module rwa_platform::marketplace {
 
          // Explicitly delete the Listing object's UID
         object::delete(listing_uid);
+
+        // Remove listing ID from the vector
+        let (found, index) = vector::index_of(&registry.active_listing_ids, &listing_obj_id);
+        if (found) {
+            vector::swap_remove(&mut registry.active_listing_ids, index);
+        }
     }
 
     // --- Initialization Function --- //
@@ -198,7 +214,8 @@ module rwa_platform::marketplace {
     fun init(ctx: &mut TxContext) {
         let registry = ListingRegistry {
             id: object::new(ctx),
-            active_listings: table::new<ID, address>(ctx)
+            active_listings: table::new<ID, address>(ctx),
+            active_listing_ids: vector::empty<ID>() // Initialize empty vector
         };
         transfer::share_object(registry);
     }
@@ -206,21 +223,11 @@ module rwa_platform::marketplace {
     // --- View Function --- //
 
     /// Returns the object IDs of all currently active listings.
-    /// TODO: Verify iteration pattern for iota::table.
+    /// TODO: Implement correct key retrieval for iota::table (standard iter/next functions do not exist).
     public fun get_active_listing_ids(registry: &ListingRegistry): vector<ID> {
-        // Attempt iteration pattern common in Move
-        let keys = vector::empty<ID>();
-        let iter = table::iter(&registry.active_listings);
-        loop {
-            let maybe_entry = table::next<ID, address>(&mut iter);
-            if (option::is_none(&maybe_entry)) {
-                break
-            };
-            let (key, _value) = option::destroy_some(maybe_entry);
-            // We only need the key (the Listing object ID)
-            vector::push_back(&mut keys, key);
-        };
-        table::destroy_empty(iter);
-        keys
+        // Standard iteration pattern failed compilation.
+        // Need to find the IOTA-specific way to iterate or query keys from iota::table::Table.
+        // Return a copy of the vector storing active IDs.
+        *&registry.active_listing_ids
     }
 }

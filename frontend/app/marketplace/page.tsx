@@ -14,6 +14,7 @@ import { toast } from "sonner";
 import Image from "next/image";
 import { Transaction } from '@iota/iota-sdk/transactions';
 import { Buffer } from 'buffer';
+import { bcs } from '@iota/iota-sdk/bcs';
 
 // TODO: Get correct Package IDs from environment variables
 const marketplacePackageId = process.env.NEXT_PUBLIC_MARKETPLACE_PACKAGE_ID || 'PLACEHOLDER_MARKETPLACE_PACKAGE_ID';
@@ -57,19 +58,30 @@ interface NftObjectContent {
 
 // Combined data for displaying a listing
 interface MarketplaceListingData {
-    listingId: string; // ID of the Listing Move object
-    nftId: string; // ID of the NFT object
-    priceMicroIota: bigint;
-    sellerAddress: string;
-    nftMetadata?: { // Metadata fetched separately for the NFT
-        name?: string;
-        description?: string;
-        imageUrl?: string;
-        amount_kg_co2e?: number;
-        activity_type?: number;
-        issuedTimestamp?: number;
+    id: string;          // ID of the Listing Move object
+    version: string;     // Version of the Listing Move object
+    digest: string;      // Digest of the Listing Move object
+    nftId: string;       // ID of the NFT object
+    price_micro_iota?: string; // Price from listing fields (u64 as string), made optional
+    seller?: string;      // Seller address from listing fields, made optional
+    nftData?: {          // Data fetched for the NFT
+        fields?: CarbonCreditNftFields;
+        type?: string;
+        display?: {      // Display data merged in
+            name?: string;
+            description?: string;
+            image_url?: string;
+        };
     };
-    fetchError?: string;
+    fetchError?: string; // Include error specific to this listing fetch
+}
+
+// Basic interface for coin objects from getCoins
+// TODO: Refine based on actual SDK response
+interface IotaCoin {
+    coinObjectId: string;
+    balance: string; // u64 as string
+    // Potentially other fields like coinType, digest, version
 }
 
 // Structure for NFT collection display object data (copied from my-assets)
@@ -107,21 +119,31 @@ export default function MarketplacePage() {
     const [cancelTxDigest, setCancelTxDigest] = useState<TransactionId | undefined>();
     const [isWaitingForCancelConfirm, setIsWaitingForCancelConfirm] = useState(false);
 
+    // State to hold user's IOTA coin objects
+    // TODO: Define a more specific Coin interface based on SDK response
+    const [userCoins, setUserCoins] = useState<any[]>([]);
+
     // --- Data Fetching Logic --- //
 
     // Fetch NFT Collection Display Data (similar to my-assets)
     const fetchDisplayData = useCallback(async () => {
         if (!client || !nftDisplayObjectId || nftDisplayObjectId === 'PLACEHOLDER_NFT_DISPLAY_ID') {
             console.error("NFT Collection Display Object ID not configured.");
-            // Don't set top-level error, listings might still load
             return;
         }
         console.log("Fetching NFT Collection Display object:", nftDisplayObjectId);
         try {
-            const response = await client.getObject({ id: nftDisplayObjectId });
-            const displayDataRaw = response?.data as unknown;
+            // Ensure options are included to fetch content and type
+            const response = await client.getObject({ 
+                id: nftDisplayObjectId,
+                options: { showContent: true, showType: true } 
+            });
+            // Access data potentially nested under 'content'
+            const displayDataRaw = response?.data as any;
+            console.log("Raw Display Object Response:", displayDataRaw); // Log the raw response
+            // Check for content and then fields within content
+            const potentialFields = displayDataRaw?.content?.fields; 
 
-            const potentialFields = (displayDataRaw as any)?.fields;
             if (potentialFields && typeof potentialFields === 'object') {
                 setCollectionDisplayData({ fields: potentialFields });
                 console.log("Parsed NFT Collection Display data:", { fields: potentialFields });
@@ -143,6 +165,19 @@ export default function MarketplacePage() {
     // This likely requires a view function in the marketplace contract or querying dynamic fields/events.
     // For now, we'll use a placeholder.
     const fetchListings = useCallback(async () => {
+        setIsLoading(true);
+        setError(null);
+        setListings([]); // Clear previous listings
+
+        // Add check for connected account before proceeding
+        if (!account?.address) {
+            console.log("fetchListings: Wallet not connected, waiting.");
+            // Don't set loading to false here, let useEffect re-trigger
+            return; 
+        }
+
+        const senderAddress = account.address;
+
         // Check required config
         let foundListingObjectIds: string[] = []; // Declare outside the try block
 
@@ -154,6 +189,8 @@ export default function MarketplacePage() {
         setIsLoading(true);
         setError(null);
         setListings([]);
+        console.log("fetchListings: Using Marketplace Pkg:", marketplacePackageId);
+        console.log("fetchListings: Using Registry ID:", listingRegistryId);
         console.log("Fetching listings from marketplace...");
 
         try {
@@ -167,11 +204,12 @@ export default function MarketplacePage() {
             });
 
             // Sender address might be required for devInspect
-            const senderAddress = account?.address; // Get sender address if available
             if (!senderAddress) {
+                console.error("fetchListings: Wallet not connected, cannot perform view call.");
                 throw new Error("Wallet not connected for view call.");
             }
 
+            console.log("fetchListings: Preparing to call devInspectTransactionBlock...");
             // Execute the dry run
             // Note: Ensure devInspectTransactionBlock is the correct method in your IOTA SDK version.
             const response = await client.devInspectTransactionBlock({
@@ -179,8 +217,10 @@ export default function MarketplacePage() {
                 transactionBlock: tx, // Pass the constructed Transaction object
             });
 
+            console.log("Raw devInspect response:", JSON.stringify(response, null, 2));
+
             // Use a different name to avoid conflict later
-            const viewCallResults = (response as any)?.results; 
+            const viewCallResults = (response as any)?.results;
             const commandResult = viewCallResults?.[0]; // Result of the first (and only) command
             const returnValues = commandResult?.returnValues; // Return values of that command
 
@@ -190,181 +230,123 @@ export default function MarketplacePage() {
             } else {
                 // Assuming the first return value contains our vector<ID>
                 // The structure is often [value, typeInfo]
-                const [value, typeInfo] = returnValues[0]; 
+                const [value, typeInfo] = returnValues[0];
                 console.log("Raw return value:", value, "Type info:", typeInfo);
 
-                // TODO: Decode BCS if necessary!
-                // The `value` might be a base64 string or Uint8Array representing BCS encoded data.
-                // You might need a BCS library or SDK helper to decode it based on the `typeInfo`.
-                // Example (Placeholder - requires BCS library):
-                // if (typeInfo includes 'vector<ID>' or similar) {
-                //    const decoded = bcs.de(typeInfo, value, { vector: 'vector', address: 'hex' });
-                //    foundListingObjectIds = decoded; 
-                // } else { ... handle error ... } 
+                console.log("Type of raw return value:", typeof value);
+                console.log("Is raw return value an array?", Array.isArray(value));
 
-                // For now, ASSUME the value is directly the array of strings (unlikely for complex types)
-                if (Array.isArray(value)) {
-                    foundListingObjectIds = value as string[];
-                    console.log("Parsed listing IDs (assuming direct array return):", foundListingObjectIds);
-                } else {
-                    console.warn("Returned value is not an array as expected (BCS decoding might be needed). Value:", value);
+                // --- Decode the returned value using BCS ---
+                try {
+                    // Type 'vector<address>' should decode ID bytes to hex strings
+                    // Ensure 'value' is Uint8Array; Array.isArray check suggests it might be number[]
+                    const bytesToDecode = Array.isArray(value) ? Uint8Array.from(value) : value;
+                    // Use the specific BCS type for deserialization
+                    foundListingObjectIds = bcs.vector(bcs.Address).parse(bytesToDecode);
+                    console.log("Decoded listing IDs via BCS:", foundListingObjectIds);
+                } catch (decodeError: any) {
+                    console.error("BCS Decoding failed:", decodeError);
+                    console.error("Raw value causing decode error:", value);
+                    toast.error(`Failed to decode listing IDs: ${decodeError.message}`);
                     foundListingObjectIds = [];
                 }
             }
 
-            if (foundListingObjectIds.length === 0) {
-                console.log("No active listing objects found.");
-                setIsLoading(false);
-                return;
-            }
+             // Log found IDs *before* fetching details
+             console.log("Found listing IDs before detail fetching:", foundListingObjectIds);
 
-            console.log("Found potential Listing Object IDs:", foundListingObjectIds);
 
-            // Fetch details for each listing object
-            const listingDetailsPromises = foundListingObjectIds.map(async (listingId: string) => {
-                try {
-                    const listingResp = await client.getObject({ id: listingId });
-                    const listingContent = listingResp?.data as ListingObjectContent | null;
+             // --- Step 2: Fetch details for found listing IDs ---
+             if (foundListingObjectIds.length === 0) {
+                 console.log("No listing IDs found to fetch details for.");
+                 // No need to setListings here, it's done in the finally block if needed
+             } else {
+                 console.log("Fetching details for listing IDs:", foundListingObjectIds);
 
-                    if (!listingContent || listingContent.dataType !== 'moveObject' || !listingContent.type?.startsWith(`${marketplacePackageId}::marketplace::Listing`)) {
-                        console.warn(`Object ${listingId} is not a valid Listing object.`);
-                        return null;
-                    }
+                 const listingDetailsPromises = foundListingObjectIds.map(async (listingId: string) => {
+                     try {
+                         const listingResp = await client.getObject({
+                             id: listingId,
+                             options: { showContent: true, showType: true }
+                         });
+                         console.log(`Checking listing object ${listingId}:`, listingResp?.data);
 
-                    const fields = listingContent.fields;
-                    const nftId = fields.nft_id;
+                         const listingContent = listingResp?.data?.content as any;
+                         const expectedTypePrefix = `${marketplacePackageId}::marketplace::Listing`;
+                         console.log("Expecting type to start with:", expectedTypePrefix);
 
-                    // Fetch NFT details separately
-                    let nftMetadata: MarketplaceListingData['nftMetadata'] = {};
-                    try {
-                        const nftResp = await client.getObject({ id: nftId });
-                        const nftContent = nftResp?.data as NftObjectContent | null;
-                        if (nftContent?.fields) {
-                            // TODO: Fetch NFT display object if needed for name/desc/image template
-                            // Use fetched collectionDisplayData
-                            const displayFields = collectionDisplayData?.fields || {};
-                            let imageUrl = displayFields.image_url || '';
-                            if (imageUrl && imageUrl.includes('{id}')) {
-                                imageUrl = imageUrl.replace('{id}', nftId);
-                            }
+                         if (listingContent &&
+                             listingContent.dataType === 'moveObject' &&
+                             listingContent.type?.startsWith(expectedTypePrefix))
+                         {
+                             const fields: ListingFields = listingContent.fields;
+                             console.log(`Listing ${listingId} Fields:`, fields); // Log the fields object
+                             const nftId = fields?.nft_id; // Still useful for identification/keys
+                             
+                             // Access nested NFT fields directly - ** ADJUST BASED ON LOG **
+                             const nestedNftFields = fields?.nft?.fields as CarbonCreditNftFields | undefined;
+                             const nestedNftType = fields?.nft?.type as string | undefined;
 
-                            nftMetadata = {
-                                name: displayFields.name,
-                                description: displayFields.description,
-                                imageUrl: imageUrl,
-                                amount_kg_co2e: nftContent.fields.amount_kg_co2e ? parseInt(nftContent.fields.amount_kg_co2e, 10) : undefined,
-                                activity_type: nftContent.fields.activity_type,
-                                issuedTimestamp: nftContent.fields.issuance_timestamp_ms ? parseInt(nftContent.fields.issuance_timestamp_ms, 10) : undefined,
-                            };
-                        }
-                    } catch (nftError) {
-                        console.error(`Failed to fetch NFT details for ${nftId}:`, nftError);
-                    }
+                             if (!nftId) {
+                                 console.warn(`Listing ${listingId} has no nft_id field.`);
+                                 // Return error object
+                                 return { id: listingId, nftId: 'unknown', fetchError: `Listing ${listingId} is missing nft_id.` } as MarketplaceListingData;
+                             }
+                             if (!nestedNftFields) {
+                                 console.warn(`Listing ${listingId} is missing nested NFT fields.`);
+                                  // Return error object
+                                 return { id: listingId, nftId: nftId, fetchError: `Listing ${listingId} is missing nested NFT data.` } as MarketplaceListingData;
+                             }
 
-                    return {
-                        listingId: listingId,
-                        nftId: nftId,
-                        priceMicroIota: BigInt(fields.price_micro_iota || '0'),
-                        sellerAddress: fields.seller,
-                        nftMetadata: nftMetadata,
-                    } as MarketplaceListingData;
+                             // Construct the object using nested data
+                             return {
+                                 id: listingId,
+                                 version: listingResp.data?.version ?? 'unknown',
+                                 digest: listingResp.data?.digest ?? 'unknown',
+                                 nftId: nftId, // Keep original ID for reference
+                                 price_micro_iota: fields?.price_micro_iota,
+                                 seller: fields?.seller,
+                                 nftData: { // Store nested NFT data directly
+                                     fields: nestedNftFields,
+                                     type: nestedNftType, // Get type from nested data too
+                                     display: collectionDisplayData?.fields || {}
+                                 },
+                                 fetchError: undefined
+                             };
+                         } else {
+                             console.warn(`Object ${listingId} is not a valid Listing object or format is unexpected.`, listingContent);
+                             // Return object with fetchError for this specific listing
+                             return { id: listingId, nftId: 'unknown', fetchError: `Listing ${listingId} invalid.` } as MarketplaceListingData;
+                         }
+                     } catch (e) {
+                         console.error(`Error fetching details for listing ${listingId}:`, e);
+                         // Return object with fetchError for this specific listing
+                         const errorMsg = e instanceof Error ? e.message : String(e);
+                         return { id: listingId, nftId: 'unknown', fetchError: `Failed to fetch ${listingId}: ${errorMsg}` } as MarketplaceListingData;
+                     }
+                 });
 
-                } catch (error) {
-                    console.error(`Failed to fetch details for listing ${listingId}:`, error);
-                    return { listingId, nftId: '', priceMicroIota: BigInt(0), sellerAddress: '', fetchError: `Failed to load listing ${listingId}` } as MarketplaceListingData;
-                }
-            });
+                 const results = await Promise.all(listingDetailsPromises);
+                 // Filter out nulls (though map now returns objects with fetchError instead of null)
+                 // We filter for listings where fetchError is NOT defined
+                 const validListings = results.filter((r): r is MarketplaceListingData => r !== null && r.fetchError === undefined);
 
-            const results = await Promise.all(listingDetailsPromises);
-            // Filter out nulls, TypeScript should infer the type correctly after filter
-            const validListings = results.filter((r): r is MarketplaceListingData => r !== null);
 
-            console.log("Processed Listings:", validListings);
-            setListings(validListings);
+                 console.log("Processed Listings:", validListings);
+                 setListings(validListings);
+             }
+
 
         } catch (err: unknown) {
             const errorMessage = err instanceof Error ? err.message : String(err);
-            console.error("Error during fetchListings:", err);
+            console.error("fetchListings: Error during devInspect or parsing:", err);
+            // Set general error for the whole fetch operation
             setError(`Failed to load marketplace listings: ${errorMessage}`);
-            setListings([]); // Clear listings on error
-            foundListingObjectIds = []; // Ensure it's cleared
+            setListings([]); // Clear listings on general error
         } finally {
             setIsLoading(false);
         }
-
-        // --- Step 2: Fetch details for found listing IDs (now outside the main try block) ---
-        if (foundListingObjectIds.length === 0) {
-            console.log("No listing IDs found to fetch details for.");
-            setListings([]); // Ensure listings are empty if no IDs were found
-            setIsLoading(false);
-            return; // Exit early
-        }
-
-        console.log("Fetching details for listing IDs:", foundListingObjectIds);
-
-        // Fetch details for each listing object
-        const listingDetailsPromises = foundListingObjectIds.map(async (listingId: string) => {
-            try {
-                const listingResp = await client.getObject({ id: listingId });
-                const listingContent = listingResp?.data as ListingObjectContent | null;
-
-                if (!listingContent || listingContent.dataType !== 'moveObject' || !listingContent.type?.startsWith(`${marketplacePackageId}::marketplace::Listing`)) {
-                    console.warn(`Object ${listingId} is not a valid Listing object.`);
-                    return null;
-                }
-
-                const fields = listingContent.fields;
-                const nftId = fields.nft_id;
-
-                // Fetch NFT details separately
-                let nftMetadata: MarketplaceListingData['nftMetadata'] = {};
-                try {
-                    const nftResp = await client.getObject({ id: nftId });
-                    const nftContent = nftResp?.data as NftObjectContent | null;
-                    if (nftContent?.fields) {
-                        // TODO: Fetch NFT display object if needed for name/desc/image template
-                        // Use fetched collectionDisplayData
-                        const displayFields = collectionDisplayData?.fields || {};
-                        let imageUrl = displayFields.image_url || '';
-                        if (imageUrl && imageUrl.includes('{id}')) {
-                            imageUrl = imageUrl.replace('{id}', nftId);
-                        }
-
-                        nftMetadata = {
-                            name: displayFields.name,
-                            description: displayFields.description,
-                            imageUrl: imageUrl,
-                            amount_kg_co2e: nftContent.fields.amount_kg_co2e ? parseInt(nftContent.fields.amount_kg_co2e, 10) : undefined,
-                            activity_type: nftContent.fields.activity_type,
-                            issuedTimestamp: nftContent.fields.issuance_timestamp_ms ? parseInt(nftContent.fields.issuance_timestamp_ms, 10) : undefined,
-                        };
-                    }
-                } catch (nftError) {
-                    console.error(`Failed to fetch NFT details for ${nftId}:`, nftError);
-                }
-
-                return {
-                    listingId: listingId,
-                    nftId: nftId,
-                    priceMicroIota: BigInt(fields.price_micro_iota || '0'),
-                    sellerAddress: fields.seller,
-                    nftMetadata: nftMetadata,
-                } as MarketplaceListingData;
-
-            } catch (error) {
-                console.error(`Failed to fetch details for listing ${listingId}:`, error);
-                return { listingId, nftId: '', priceMicroIota: BigInt(0), sellerAddress: '', fetchError: `Failed to load listing ${listingId}` } as MarketplaceListingData;
-            }
-        });
-
-        const results = await Promise.all(listingDetailsPromises);
-        // Filter out nulls, TypeScript should infer the type correctly after filter
-        const validListings = results.filter((r): r is MarketplaceListingData => r !== null);
-
-        console.log("Processed Listings:", validListings);
-        setListings(validListings);
-
-    }, [client, account, marketplacePackageId, listingRegistryId]);
+    }, [client, account, marketplacePackageId, listingRegistryId, collectionDisplayData]); // Add collectionDisplayData dependency
 
     // Initial fetch
     useEffect(() => {
@@ -433,7 +415,12 @@ export default function MarketplacePage() {
             }
 
             try {
-                const txDetails = await client.getTransactionBlock({ digest: cancelTxDigest });
+                // Add options to fetch effects and log the details
+                const txDetails = await client.getTransactionBlock({ 
+                    digest: cancelTxDigest, 
+                    options: { showEffects: true }
+                });
+                console.log('Polling cancel tx details:', txDetails);
                 const status = (txDetails as any)?.effects?.status?.status;
 
                 if (status === 'success') {
@@ -459,48 +446,125 @@ export default function MarketplacePage() {
         return () => clearInterval(intervalId);
     }, [cancelTxDigest, isWaitingForCancelConfirm, client, fetchListings]);
 
+    // Function to fetch user's IOTA coins
+    const fetchUserCoins = useCallback(async () => {
+        if (!client || !account?.address) {
+            console.log("Cannot fetch coins, client or account not available.");
+            setUserCoins([]);
+            return [];
+        }
+        try {
+            console.log(`Fetching coins for ${account.address}...`);
+            // Assuming getCoins fetches native IOTA coins by default, or specify coinType if needed
+            const response = await client.getCoins({ owner: account.address });
+            // TODO: Adjust parsing based on actual response structure
+            const coins = (response as any)?.data || []; 
+            console.log("Fetched user coins:", coins);
+            setUserCoins(coins);
+            return coins;
+        } catch (error) {
+            console.error("Failed to fetch user coins:", error);
+            toast.error(`Failed to fetch wallet balance: ${error instanceof Error ? error.message : String(error)}`);
+            setUserCoins([]);
+            return [];
+        }
+    }, [client, account]);
+
     // --- Actions --- //
 
+    // TODO: Implement coin splitting logic for handleBuy
     const handleBuy = useCallback(async (listing: MarketplaceListingData) => {
         if (!client || !account || !account.address || !marketplacePackageId || marketplacePackageId === 'PLACEHOLDER_MARKETPLACE_PACKAGE_ID') {
             toast.error("Client, account, or Marketplace Package ID not configured.");
             return;
         }
         if (buyingListingId || isTxPending) return; // Prevent multiple buys
-        if (account.address === listing.sellerAddress) {
+        if (account.address === listing.seller) {
              toast.warning("You cannot buy your own listing.");
              return;
          }
 
-        setBuyingListingId(listing.listingId);
+        setBuyingListingId(listing.id);
         setBuyTxDigest(undefined);
         setIsWaitingForBuyConfirm(false);
         toast.info(`Preparing to buy item ${listing.nftId.substring(0, 6)}...`);
 
         try {
+            // Fetch user's coins first
+            const currentCoins = await fetchUserCoins(); // Assumes this returns IotaCoin[] or similar
+            if (currentCoins.length === 0) {
+                toast.error("Could not find any IOTA coins in your wallet.");
+                setBuyingListingId(null);
+                return;
+            }
+
+            // 2. Find a suitable coin
+            const requiredAmount = BigInt(listing.price_micro_iota || '0');
+            let paymentCoinInput: { type: 'object', objectId: string } | { type: 'split', objectId: string, amount: bigint } | null = null;
+
+            // Sort coins descending by balance to prioritize using larger coins first for splitting
+            const sortedCoins = currentCoins
+                .map((coin: IotaCoin): IotaCoin & { balanceBigInt: bigint } => ({ // Add type to coin parameter
+                    ...coin,
+                    balanceBigInt: BigInt(coin.balance || '0')
+                }))
+                // Add types to sort parameters
+                .sort((a: { balanceBigInt: bigint }, b: { balanceBigInt: bigint }) => Number(b.balanceBigInt - a.balanceBigInt));
+
+            for (const coin of sortedCoins) {
+                if (coin.balanceBigInt >= requiredAmount) {
+                    if (coin.balanceBigInt === requiredAmount) {
+                        // Found exact match
+                        paymentCoinInput = { type: 'object', objectId: coin.coinObjectId };
+                        console.log(`Found exact match coin: ${coin.coinObjectId}`);
+                    } else {
+                        // Found coin to split
+                        paymentCoinInput = { type: 'split', objectId: coin.coinObjectId, amount: requiredAmount };
+                        console.log(`Found coin to split: ${coin.coinObjectId}, balance: ${coin.balanceBigInt}, required: ${requiredAmount}`);
+                    }
+                    break; // Stop after finding the first suitable coin
+                }
+            }
+
+            if (!paymentCoinInput) {
+                // TODO: Implement merging logic if desired
+                toast.error(`Insufficient balance. No single coin found with at least ${Number(requiredAmount) / 1_000_000} IOTA.`);
+                setBuyingListingId(null);
+                return;
+            }
+
+            // 3. Construct the transaction
             const tx = new Transaction();
-            tx.setGasBudget(100_000_000); // Adjust gas budget
+            tx.setGasBudget(150_000_000); // May need higher budget for split
 
-            // 1. Need to get a Coin<IOTA> object with the exact price
-            // This usually involves splitting coins. The SDK might have helpers, or it needs specific PTB setup.
-            // Placeholder: Assuming a helper function `getExactCoin` exists or is handled by SDK implicitly.
-            // For now, we construct the call assuming the Coin object is available as an argument.
+            let paymentCoinArg; // This will hold the argument for the moveCall
 
-            // TODO: Implement or verify Coin splitting logic!
-            // This is a critical step. For now, we'll use a placeholder object ID.
-            const paymentCoinObjectId = "PLACEHOLDER_COIN_OBJECT_ID_WITH_PRICE";
+            if (paymentCoinInput.type === 'split') {
+                // Command 0: Split Coin
+                // Assumes splitCoins takes the coin *object* and an array of amounts to split off
+                // Verify method name and argument structure with SDK docs!
+                const splitResult = tx.splitCoins(tx.object(paymentCoinInput.objectId), [tx.pure.u64(paymentCoinInput.amount)]);
+                // The payment coin is the result of this split command
+                paymentCoinArg = splitResult; 
+                console.log(`Prepared splitCoins command for ${paymentCoinInput.objectId}`);
+            } else {
+                // Use the exact match coin directly
+                paymentCoinArg = tx.object(paymentCoinInput.objectId);
+                console.log(`Using direct coin object: ${paymentCoinInput.objectId}`);
+            }
 
             tx.moveCall({
                 target: `${marketplacePackageId}::marketplace::buy_item`,
                 arguments: [
-                    tx.object(listing.listingId), // The Listing object being bought
-                    tx.object(paymentCoinObjectId) // The Coin<IOTA> object with the exact price
+                    tx.object(listing.id), // The Listing object being bought
+                    paymentCoinArg                // The result of splitCoins or the direct coin object
                 ],
                 // typeArguments: [], // Likely none for buy_item
             });
 
-            console.log("Constructed buy tx (WARNING: Payment coin logic is a placeholder):");
+            console.log("Constructed buy transaction with coin logic.");
 
+            // 4. Sign and Execute
             signAndExecuteTransaction(
                 { transaction: tx },
                 {
@@ -513,7 +577,7 @@ export default function MarketplacePage() {
                     onError: (error: any) => {
                         console.error("Buy transaction failed:", error);
                         toast.error(`Buy failed: ${error.message || 'Unknown error'}`);
-                        setBuyingListingId(null);
+                        setBuyingListingId(null); // Reset on error
                     },
                 }
             );
@@ -521,11 +585,11 @@ export default function MarketplacePage() {
         } catch (error: unknown) {
             const errorMessage = error instanceof Error ? error.message : String(error);
             console.error("Error constructing/signing buy transaction:", error);
-            toast.error(`Error: ${errorMessage}`);
-            setBuyingListingId(null);
+            toast.error(`Error during buy process: ${errorMessage}`);
+            setBuyingListingId(null); // Reset on error
         }
 
-    }, [client, account, marketplacePackageId, buyingListingId, isTxPending, signAndExecuteTransaction]);
+    }, [client, account, marketplacePackageId, buyingListingId, isTxPending, signAndExecuteTransaction, fetchUserCoins]);
 
     const handleCancelListing = useCallback(async (listing: MarketplaceListingData) => {
         if (!client || !account || !account.address || !marketplacePackageId || marketplacePackageId === 'PLACEHOLDER_MARKETPLACE_PACKAGE_ID' || !listingRegistryId || listingRegistryId === 'PLACEHOLDER_REGISTRY_ID') {
@@ -533,12 +597,12 @@ export default function MarketplacePage() {
             return;
         }
         if (cancellingListingId || isTxPending) return; // Prevent multiple cancels
-        if (account.address !== listing.sellerAddress) {
+        if (account.address !== listing.seller) {
             toast.warning("You cannot cancel a listing that is not yours.");
             return;
         }
 
-        setCancellingListingId(listing.listingId);
+        setCancellingListingId(listing.id);
         setCancelTxDigest(undefined);
         setIsWaitingForCancelConfirm(false);
         toast.info(`Preparing to cancel listing ${listing.nftId.substring(0, 6)}...`);
@@ -551,7 +615,7 @@ export default function MarketplacePage() {
                 target: `${marketplacePackageId}::marketplace::cancel_listing`,
                 arguments: [
                     tx.object(listingRegistryId), // Argument 0: The ListingRegistry object
-                    tx.object(listing.listingId)  // Argument 1: The Listing object to cancel
+                    tx.object(listing.id)  // Argument 1: The Listing object to cancel
                 ],
                 // typeArguments: [], // None for cancel_listing
             });
@@ -587,33 +651,36 @@ export default function MarketplacePage() {
     // --- Render Functions --- //
 
     const renderListingCard = (listing: MarketplaceListingData) => {
-        const isBuyingThis = buyingListingId === listing.listingId;
-        const isCancellingThis = cancellingListingId === listing.listingId;
-        const isMyListing = account?.address === listing.sellerAddress;
+        const isBuyingThis = buyingListingId === listing.id;
+        const isCancellingThis = cancellingListingId === listing.id;
+        const isMyListing = account?.address === listing.seller;
 
         // Determine button state based on action type (buy vs cancel)
         const isProcessing = !!buyingListingId || !!cancellingListingId || isTxPending || isWaitingForBuyConfirm || isWaitingForCancelConfirm;
-        const buyButtonDisabled = isProcessing || isMyListing;
-        const cancelButtonDisabled = isProcessing || !isMyListing;
+        // Explicitly check if fetchError is truthy (exists)
+        const buyButtonDisabled = isProcessing || isMyListing || !!listing.fetchError; 
+        const cancelButtonDisabled = isProcessing || !isMyListing || !!listing.fetchError;
 
         // Format price from microIOTA to IOTA string
-        const priceInIota = (Number(listing.priceMicroIota) / 1_000_000).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+        // Use price_micro_iota and handle potential undefined value
+        const priceMicroIota = BigInt(listing.price_micro_iota || '0');
+        const priceInIota = (Number(priceMicroIota) / 1_000_000).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 });
 
   return (
-            <Card key={listing.listingId} className="flex flex-col">
+            <Card key={listing.id} className="flex flex-col">
                 <CardHeader>
-                    <CardTitle className="truncate" title={listing.nftMetadata?.name || 'NFT'}>
-                        {listing.nftMetadata?.name || `NFT ${listing.nftId.substring(0, 6)}...`}
+                    <CardTitle className="truncate" title={listing.nftData?.display?.name || 'NFT'}>
+                        {listing.nftData?.display?.name || `NFT ${listing.nftId.substring(0, 6)}...`}
                     </CardTitle>
                     <CardDescription className="text-xs truncate" title={listing.nftId}>
                         NFT ID: {listing.nftId}
                     </CardDescription>
                 </CardHeader>
                 <CardContent className="flex-grow">
-                    {listing.nftMetadata?.imageUrl ? (
+                    {listing.nftData?.display?.image_url ? (
                         <Image
-                            src={listing.nftMetadata.imageUrl}
-                            alt={listing.nftMetadata.name || 'NFT Image'}
+                            src={listing.nftData.display.image_url}
+                            alt={listing.nftData.display.name || 'NFT Image'}
                             width={400}
                             height={240}
                             className="w-full h-48 object-cover rounded"
@@ -624,11 +691,13 @@ export default function MarketplacePage() {
                         <div className="w-full h-48 bg-secondary rounded flex items-center justify-center text-muted-foreground">No Image</div>
                     )}
                     <div className="mt-4 space-y-1 text-sm">
-                         {listing.nftMetadata?.amount_kg_co2e !== undefined && <p><strong>Amount:</strong> {(listing.nftMetadata.amount_kg_co2e / 1000).toLocaleString()} kg CO₂e</p>}
-                         {listing.nftMetadata?.activity_type !== undefined && <p><strong>Activity Code:</strong> {listing.nftMetadata.activity_type}</p>}
+                         {/* Display fetch error if present */}
+                         {listing.fetchError && <p className="text-red-500 text-xs font-semibold mb-2">Error loading listing: {listing.fetchError}</p>}
+                         {/* Use optional chaining and check fields */}
+                         {listing.nftData?.fields?.amount_kg_co2e !== undefined && <p><strong>Amount:</strong> {(Number(listing.nftData.fields.amount_kg_co2e) / 1000).toLocaleString()} kg CO₂e</p>}
+                         {listing.nftData?.fields?.activity_type !== undefined && <p><strong>Activity Code:</strong> {listing.nftData.fields.activity_type}</p>}
                          <p><strong>Price:</strong> {priceInIota} IOTA</p>
-                         <p className="text-xs text-muted-foreground truncate" title={listing.sellerAddress}><strong>Seller:</strong> {listing.sellerAddress}</p>
-                         {listing.fetchError && <p className="text-red-500 text-xs">Error: {listing.fetchError}</p>}
+                         <p className="text-xs text-muted-foreground truncate" title={listing.seller || 'Unknown Seller'}><strong>Seller:</strong> {listing.seller || 'Unknown Seller'}</p>
     </div>
                 </CardContent>
                 <CardFooter className="flex justify-end">
@@ -702,7 +771,8 @@ export default function MarketplacePage() {
                      ? [...Array(8)].map((_, i) => renderSkeletonCard(i))
                      : listings.length > 0
                          ? listings.map(renderListingCard)
-                         : !error && <p className="col-span-full text-center text-gray-500 mt-8">No items currently listed on the marketplace.</p>
+                         // Update empty state message
+                         : !error && <p className="col-span-full text-center text-gray-500 mt-8">No items currently listed, or failed to load listings.</p>
                  }
              </div>
         </div>

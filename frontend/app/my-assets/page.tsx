@@ -183,15 +183,22 @@ export default function MyAssetsPage() {
     // Fetch details for multiple objects
     const fetchObjectsBatch = useCallback(async (objectIds: string[]): Promise<Map<string, ObjectInfo | null>> => {
         const results = new Map<string, ObjectInfo | null>();
-        if (!client || objectIds.length === 0) return results;
+        if (!client || objectIds.length === 0) {
+            console.log("fetchObjectsBatch: Skipping, client not ready or no object IDs provided.");
+            return results;
+        }
         console.log("Fetching object details for:", objectIds);
 
         // Fetch objects sequentially to avoid rate limits or complex batching logic for now
         try {
             for (const id of objectIds) {
                 try {
-                    // Use parameter object with the correct property name
-                    const response = await client.getObject({ id: id });
+                    // Use parameter object AND request content
+                    console.log(`fetchObjectsBatch: Fetching object ${id}`);
+                    const response = await client.getObject({
+                        id: id,
+                        options: { showContent: true, showType: true } // Ensure content is fetched
+                    });
                     // Cast to unknown first for safety
                     results.set(id, response as unknown as ObjectInfo || null);
                 } catch (individualError: unknown) {
@@ -215,6 +222,7 @@ export default function MyAssetsPage() {
             // Don't fetch if client, account, or display data isn't ready
             setIsLoading(false); // Ensure loading state is reset if conditions aren't met
             setOwnedNfts([]); // Clear NFTs if account changes or display data missing
+            console.log("fetchOwnedNfts: Skipping fetch, dependencies not ready (client, account, or display data).");
             return;
         }
 
@@ -226,6 +234,7 @@ export default function MyAssetsPage() {
 
         try {
             console.log(`Using type filter: ${carbonNftType}`);
+            console.log(`Owner address: ${account.address}`);
             // Fetch objects owned by the current account, filtering by the specific NFT type
              const response = await client.getOwnedObjects({
                  owner: account.address,
@@ -235,11 +244,14 @@ export default function MyAssetsPage() {
              });
 
              // Cast to unknown first
-             const apiResponse = response as unknown as { data?: Array<{ objectId?: string, type?: string }> };
+             const apiResponse = response as unknown as {
+                  data?: Array<{ data?: { objectId?: string, type?: string } }>
+              };
+             console.log("Raw getOwnedObjects response:", JSON.stringify(apiResponse, null, 2)); // Log raw response
              const items = apiResponse?.data || [];
              if (items && Array.isArray(items)) {
                   ownedObjectIds = items
-                      .map((item) => item?.objectId)
+                      .map((item) => item?.data?.objectId)
                       .filter(Boolean) as string[];
                   console.log(`Found ${ownedObjectIds.length} potential ${carbonNftType} objects owned by ${account.address}`);
               } else {
@@ -267,23 +279,41 @@ export default function MyAssetsPage() {
         // Process and filter fetched objects
         const processedNfts: OwnedNftDisplayData[] = [];
         for (const [id, objectInfo] of objectDetailsMap.entries()) {
+            console.log(`Processing object ID: ${id}`); // Log which object is being processed
             if (!objectInfo?.data) {
                 console.warn(`Skipping object ${id} due to missing data.`);
                 continue;
             }
 
+            // Log the raw data structure for this specific object
+            console.log(`Raw data for object ${id}:`, JSON.stringify(objectInfo.data, null, 2));
+
             // Safely access nested data
              try {
-                const content = objectInfo.data as NftObjectContent; // Assume this structure for now
+                // Access the nested 'content' field which holds the Move object data
+                const data = objectInfo.data as any; // Cast to any for easier access
+                const nestedContent = data?.content;
 
-                 // Double check the type just in case filtering failed
-                 if (content.type !== carbonNftType) {
-                     console.warn(`Skipping object ${id} - type mismatch: expected ${carbonNftType}, got ${content.type}`);
-                     continue;
-                 }
+                // Double check the type just in case filtering failed
+                if (!data?.type) {
+                    console.warn(`Skipping object ${id} - missing top-level type information.`);
+                    continue;
+                }
+                if (data.type !== carbonNftType) {
+                    console.warn(`Skipping object ${id} - type mismatch: expected ${carbonNftType}, got ${data.type}`);
+                    continue;
+                }
 
-                 // Basic data extraction
-                 const nftData: OwnedNftDisplayData = {
+                // Check if nested content and its fields exist
+                if (!nestedContent?.fields) {
+                    console.warn(`Skipping object ${id} - missing fields information.`);
+                    continue;
+                }
+
+                // Basic data extraction
+                const fields = nestedContent.fields as CarbonCreditNftFields; // Now cast the actual fields
+
+                const nftData: OwnedNftDisplayData = {
                      id: id, // Use the object ID
                       metadata: {
                           // Fields from Collection Display Object
@@ -295,13 +325,13 @@ export default function MyAssetsPage() {
                                       : '',
 
                           // Fields specific to THIS NFT from its content.fields
-                          amount_kg_co2e: content.fields?.amount_kg_co2e ? parseInt(content.fields.amount_kg_co2e, 10) : undefined,
-                          activity_type: content.fields?.activity_type,
+                          amount_kg_co2e: fields?.amount_kg_co2e ? parseInt(fields.amount_kg_co2e, 10) : undefined,
+                          activity_type: fields?.activity_type,
                           // Convert verification_id (vector<u8>) to hex string for display
-                          verification_id_hex: content.fields?.verification_id
-                              ? Buffer.from(content.fields.verification_id).toString('hex')
+                          verification_id_hex: fields?.verification_id
+                              ? (() => { try { return Buffer.from(fields.verification_id!).toString('hex'); } catch(e) { console.error(`Error parsing verification_id for ${id}`, e); return undefined; } })()
                               : undefined,
-                          issuedTimestamp: content.fields?.issuance_timestamp_ms ? parseInt(content.fields.issuance_timestamp_ms, 10) : undefined,
+                          issuedTimestamp: fields?.issuance_timestamp_ms ? parseInt(fields.issuance_timestamp_ms, 10) : undefined,
 
                           // Attributes might be derived or added later if needed
                           attributes: [], // Placeholder

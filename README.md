@@ -12,6 +12,7 @@ To create a decentralized application where users can:
 5.  List their NFTs for sale on a simple marketplace.
 6.  Browse and purchase listed NFTs using IOTA tokens.
 7.  Retire (burn) their NFTs to claim the offset.
+8.  Receive an on-chain `RetirementCertificate` as proof after retiring an NFT.
 
 ## Technology Stack
 
@@ -166,6 +167,30 @@ sequenceDiagram
     Frontend->>Seller: Shows Success Message
 ```
 
+### 3. NFT Retirement Flow
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Frontend
+    participant Wallet
+    participant IOTA Network
+
+    User->>Frontend: Navigates to /my-assets
+    User->>Frontend: Clicks "Retire" on an owned CarbonCreditNFT
+    Frontend->>Wallet: Request Transaction Signature (`retire_nft` call with NFT ID)
+    Wallet-->>Frontend: Provides Signed Transaction
+    Frontend->>IOTA Network: Submits `retire_nft` Transaction
+    IOTA Network-->>Frontend: Transaction Confirmation/Digest
+    Note over IOTA Network: `retire_nft` consumes NFT, creates & transfers `RetirementCertificate`
+    Frontend->>User: Shows Success Message
+    User->>Frontend: Refreshes /my-assets page (or auto-refreshes)
+    Frontend->>IOTA Network: Get Owned Objects (NFTs and Certificates)
+    IOTA Network-->>Frontend: Object IDs and Data
+    Frontend->>User: Displays updated list (NFT removed, Certificate added)
+
+```
+
 ## Setup Instructions
 
 1.  **Prerequisites:**
@@ -270,7 +295,7 @@ sequenceDiagram
         *   Connect an IOTA wallet (ensure it has >1 coin object).
         *   Navigate through the pages: "Actions", "My Assets", "Marketplace".
         *   **Actions:** Upload a fitness screenshot, submit the request, and verify if an NFT appears in "My Assets" after a short delay. Check backend logs for OpenAI/minting status.
-        *   **My Assets:** Verify owned NFTs are displayed correctly (image based on type, data). Test the "Retire" functionality. Test the "List for Sale" button opens the dialog.
+        *   **My Assets:** Verify owned NFTs are displayed correctly (image based on type, data). Test the "Retire" functionality - **verify the NFT disappears and a corresponding `RetirementCertificate` appears in the new section below**. Test the "List for Sale" button opens the dialog.
         *   **Listing Dialog:** Enter a price and submit. Check the marketplace page afterwards.
         *   **Marketplace:** Verify listed items appear. Test the "Buy Now" button (using a different account than the seller). Test the "Cancel Listing" button for items you listed. Check your wallet balance changes and NFT ownership transfers.
     *   **Wallet Interaction:** Test connecting/disconnecting the wallet. Test transaction signing prompts.
@@ -283,7 +308,7 @@ sequenceDiagram
         iota-client move test
         ```
         Expect potential failures or the need for significant refactoring based on the IOTA test framework.
-    *   **Manual CLI Interaction:** Use `iota-client call` to interact directly with deployed contract functions (`list_item`, `buy_item`, `cancel_listing`, `retire_nft`, `mint_nft` - requires AdminCap/Registry IDs) to test specific scenarios or edge cases.
+    *   **Manual CLI Interaction:** Use `iota-client call` to interact directly with deployed contract functions (`list_item`, `buy_item`, `cancel_listing`, `retire_nft`, `mint_nft` - requires AdminCap/Registry IDs) to test specific scenarios or edge cases. Verify that calling `retire_nft` results in the creation of a `RetirementCertificate` object owned by the caller.
 
 ## Important Notes
 

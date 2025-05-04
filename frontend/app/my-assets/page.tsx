@@ -88,26 +88,38 @@ interface OwnedNftDisplayData {
     };
 }
 
-// Type for API responses
-interface DisplayDataResponse {
-    fields?: Record<string, string>;
-    version?: number;
-    [key: string]: unknown;
-}
-
-// Type for owned objects response
-interface OwnedObjectsResponse {
-    data?: Array<{
-        objectId?: string;
-        [key: string]: unknown;
-    }>;
-    [key: string]: unknown;
-}
-
 // Type for object info response
 interface ObjectInfo {
     data?: NftObjectContent | Record<string, unknown>;
     [key: string]: unknown;
+}
+
+// Interface for the fields within the RetirementCertificate Move struct
+interface RetirementCertificateFields {
+    original_nft_id?: string; // ID
+    retirer_address?: string; // address
+    retired_amount_kg_co2e?: string; // u64 as string
+    original_verification_id?: number[]; // vector<u8>
+    retirement_timestamp_ms?: string; // u64 as string
+}
+
+// Interface for the content of a fetched RetirementCertificate object
+interface CertificateObjectContent {
+    dataType?: 'moveObject';
+    type?: string; // e.g., "0xPACKAGE::carbon_nft_manager::RetirementCertificate"
+    hasPublicTransfer?: boolean; // Should be true based on our implementation (using transfer, not freeze)
+    fields?: RetirementCertificateFields;
+}
+
+// Combined type for displaying Certificates in the UI
+interface OwnedCertificateDisplayData {
+    id: string; // Certificate Object ID
+    originalNftId?: string;
+    retirerAddress?: string;
+    retiredAmountKgCo2e?: number; // Parsed from string
+    originalVerificationIdHex?: string; // Processed from vector<u8>
+    retirementTimestamp?: number; // Parsed from string
+    // Add any other processed fields needed for display
 }
 
 // --- Component ---
@@ -138,6 +150,8 @@ export default function MyAssetsPage() {
     const [isListDialogOpen, setIsListDialogOpen] = useState(false);
     const [nftToList, setNftToList] = useState<OwnedNftDisplayData | null>(null);
 
+    // Add state for owned certificates
+    const [ownedCertificates, setOwnedCertificates] = useState<OwnedCertificateDisplayData[]>([]);
 
     // --- Data Fetching Logic ---
 
@@ -225,46 +239,54 @@ export default function MyAssetsPage() {
 
     // Define fetchOwnedNfts outside useEffect, wrapped in useCallback
     const fetchOwnedNfts = useCallback(async () => {
-        if (!client || !account || !account.address || !collectionDisplayData) {
-            // Don't fetch if client, account, or display data isn't ready
-            setIsLoading(false); // Ensure loading state is reset if conditions aren't met
-            setOwnedNfts([]); // Clear NFTs if account changes or display data missing
-            console.log("fetchOwnedNfts: Skipping fetch, dependencies not ready (client, account, or display data).");
+        if (!client || !account || !account.address) {
+            // Don't fetch if client or account isn't ready
+            // Keep collectionDisplayData check within NFT processing
+            setIsLoading(true); // Still set loading true initially
+            setError(null);
+            setOwnedNfts([]);
+            setOwnedCertificates([]); // Clear certificates too
+            console.log("fetchOwnedNfts: Skipping fetch, client or account not ready.");
+            setIsLoading(false); // Reset loading if skipping
             return;
         }
 
-        console.log("Fetching owned NFTs for:", account.address);
+        console.log("Fetching owned assets for:", account.address);
         setIsLoading(true);
         setError(null);
         setOwnedNfts([]); // Clear previous NFTs
-        let ownedObjectIds: string[] = [];
+        setOwnedCertificates([]); // Clear previous Certificates
+
+        // --- Define Types ---
+        const carbonNftType = `${nftPackageId}::carbon_nft_manager::CarbonCreditNFT`;
+        const certificateType = `${nftPackageId}::carbon_nft_manager::RetirementCertificate`; // Define certificate type
+
+        let ownedNftObjectIds: string[] = [];
+        let ownedCertObjectIds: string[] = [];
 
         try {
-            console.log(`Using type filter: ${carbonNftType}`);
-            console.log(`Owner address: ${account.address}`);
-            // Fetch objects owned by the current account, filtering by the specific NFT type
-             const response = await client.getOwnedObjects({
-                 owner: account.address,
-                 // Corrected filter based on likely SDK structure (Guessing StructType)
-                 filter: { StructType: carbonNftType },
-                 options: { showType: true, showContent: false }, // Fetch minimal info initially
-             });
+            // --- Fetch NFT Object IDs ---
+            console.log(`Fetching NFTs with type filter: ${carbonNftType}`);
+            const nftResponse = await client.getOwnedObjects({
+                owner: account.address,
+                filter: { StructType: carbonNftType },
+                options: { showType: true, showContent: false },
+            });
+            const nftApiResponse = nftResponse as unknown as { data?: Array<{ data?: { objectId?: string } }> };
+            ownedNftObjectIds = (nftApiResponse?.data || []).map(item => item?.data?.objectId).filter(Boolean) as string[];
+            console.log(`Found ${ownedNftObjectIds.length} potential NFT objects.`);
 
-             // Cast to unknown first
-             const apiResponse = response as unknown as {
-                  data?: Array<{ data?: { objectId?: string, type?: string } }>
-              };
-             console.log("Raw getOwnedObjects response:", JSON.stringify(apiResponse, null, 2)); // Log raw response
-             const items = apiResponse?.data || [];
-             if (items && Array.isArray(items)) {
-                  ownedObjectIds = items
-                      .map((item) => item?.data?.objectId)
-                      .filter(Boolean) as string[];
-                  console.log(`Found ${ownedObjectIds.length} potential ${carbonNftType} objects owned by ${account.address}`);
-              } else {
-                  console.log("No objects found or unexpected response structure:", response);
-                  ownedObjectIds = [];
-              }
+            // --- Fetch Certificate Object IDs ---
+            console.log(`Fetching Certificates with type filter: ${certificateType}`);
+            const certResponse = await client.getOwnedObjects({
+                owner: account.address,
+                filter: { StructType: certificateType },
+                options: { showType: true, showContent: false },
+            });
+            const certApiResponse = certResponse as unknown as { data?: Array<{ data?: { objectId?: string } }> };
+            ownedCertObjectIds = (certApiResponse?.data || []).map(item => item?.data?.objectId).filter(Boolean) as string[];
+            console.log(`Found ${ownedCertObjectIds.length} potential Certificate objects.`);
+
         } catch (err: unknown) {
             const errorMessage = err instanceof Error ? err.message : String(err);
             console.error("Error fetching owned object IDs:", err);
@@ -273,90 +295,104 @@ export default function MyAssetsPage() {
             return; // Stop execution here
         }
 
-        if (ownedObjectIds.length === 0) {
-            console.log("No owned NFTs of the target type found.");
+        const allObjectIds = [...ownedNftObjectIds, ...ownedCertObjectIds];
+
+        if (allObjectIds.length === 0) {
+            console.log("No owned NFTs or Certificates found.");
             setIsLoading(false);
             return;
         }
 
-        // Fetch full details for the identified objects
-        const objectDetailsMap = await fetchObjectsBatch(ownedObjectIds);
-        console.log("Fetched details map:", objectDetailsMap);
+        // Fetch full details for all identified objects
+        const objectDetailsMap = await fetchObjectsBatch(allObjectIds);
+        console.log("Fetched details map for all objects:", objectDetailsMap);
 
         // Process and filter fetched objects
         const processedNfts: OwnedNftDisplayData[] = [];
+        const processedCertificates: OwnedCertificateDisplayData[] = []; // Array for certificates
+
         for (const [id, objectInfo] of objectDetailsMap.entries()) {
-            console.log(`Processing object ID: ${id}`); // Log which object is being processed
+            console.log(`Processing object ID: ${id}`);
             if (!objectInfo?.data) {
                 console.warn(`Skipping object ${id} due to missing data.`);
                 continue;
             }
-
             // Log the raw data structure for this specific object
-            console.log(`Raw data for object ${id}:`, JSON.stringify(objectInfo.data, null, 2));
+            // console.log(`Raw data for object ${id}:`, JSON.stringify(objectInfo.data, null, 2));
 
-            // Safely access nested data
-             try {
-                // Access the nested 'content' field which holds the Move object data
+            try {
                 const data = objectInfo.data as any; // Cast to any for easier access
-                const nestedContent = data?.content;
 
-                // Double check the type just in case filtering failed
-                if (!data?.type) {
-                    console.warn(`Skipping object ${id} - missing top-level type information.`);
-                    continue;
+                // --- Process based on Type ---
+                if (data?.type === carbonNftType) {
+                    // --- Process as CarbonCreditNFT ---
+                    if (!collectionDisplayData) {
+                        console.warn(`Skipping NFT ${id} - collectionDisplayData not ready.`);
+                        continue; // Skip if display data isn't loaded yet
+                    }
+                    const nestedContent = data?.content;
+                    if (!nestedContent?.fields) {
+                        console.warn(`Skipping NFT ${id} - missing fields information.`);
+                        continue;
+                    }
+                    const fields = nestedContent.fields as CarbonCreditNftFields;
+
+                    const nftData: OwnedNftDisplayData = {
+                        id: id,
+                        metadata: {
+                            name: collectionDisplayData?.fields?.name ?? 'Verified Carbon Credit',
+                            description: collectionDisplayData?.fields?.description ?? 'No collection description.',
+                            // imageUrl logic removed here, handled in renderNftCard
+                            amount_kg_co2e: fields?.amount_kg_co2e ? parseInt(fields.amount_kg_co2e, 10) : undefined,
+                            activity_type: fields?.activity_type,
+                            verification_id_hex: fields?.verification_id
+                                ? (() => { try { return Buffer.from(fields.verification_id!).toString('hex'); } catch(e) { console.error(`Error parsing verification_id for NFT ${id}`, e); return undefined; } })()
+                                : undefined,
+                            issuedTimestamp: fields?.issuance_timestamp_ms ? parseInt(fields.issuance_timestamp_ms, 10) : undefined,
+                            attributes: [], // Placeholder
+                        }
+                    };
+                    processedNfts.push(nftData);
+
+                } else if (data?.type === certificateType) {
+                    // --- Process as RetirementCertificate ---
+                    const nestedContent = data?.content;
+                    if (!nestedContent?.fields) {
+                        console.warn(`Skipping Certificate ${id} - missing fields information.`);
+                        continue;
+                    }
+                    const fields = nestedContent.fields as RetirementCertificateFields; // Use correct interface
+
+                    const certData: OwnedCertificateDisplayData = {
+                        id: id,
+                        originalNftId: fields?.original_nft_id,
+                        retirerAddress: fields?.retirer_address,
+                        retiredAmountKgCo2e: fields?.retired_amount_kg_co2e ? parseInt(fields.retired_amount_kg_co2e, 10) : undefined,
+                        originalVerificationIdHex: fields?.original_verification_id
+                            ? (() => { try { return Buffer.from(fields.original_verification_id!).toString('hex'); } catch(e) { console.error(`Error parsing original_verification_id for Cert ${id}`, e); return undefined; } })()
+                            : undefined,
+                        retirementTimestamp: fields?.retirement_timestamp_ms ? parseInt(fields.retirement_timestamp_ms, 10) : undefined,
+                    };
+                    processedCertificates.push(certData);
+
+                } else {
+                    console.warn(`Skipping object ${id} - unknown type: ${data?.type}`);
                 }
-                if (data.type !== carbonNftType) {
-                    console.warn(`Skipping object ${id} - type mismatch: expected ${carbonNftType}, got ${data.type}`);
-                    continue;
-                }
 
-                // Check if nested content and its fields exist
-                if (!nestedContent?.fields) {
-                    console.warn(`Skipping object ${id} - missing fields information.`);
-                    continue;
-                }
-
-                // Basic data extraction
-                const fields = nestedContent.fields as CarbonCreditNftFields; // Now cast the actual fields
-
-                const nftData: OwnedNftDisplayData = {
-                     id: id, // Use the object ID
-                      metadata: {
-                          // Fields from Collection Display Object
-                          name: collectionDisplayData?.fields?.name ?? 'Verified Carbon Credit',
-                          description: collectionDisplayData?.fields?.description ?? 'No collection description.',
-                          // Construct imageUrl (assuming display has template like image_url: ".../{id}.png")
-                          imageUrl: collectionDisplayData?.fields?.image_url
-                                      ? collectionDisplayData.fields.image_url.replace('{id}', id)
-                                      : '',
-
-                          // Fields specific to THIS NFT from its content.fields
-                          amount_kg_co2e: fields?.amount_kg_co2e ? parseInt(fields.amount_kg_co2e, 10) : undefined,
-                          activity_type: fields?.activity_type,
-                          // Convert verification_id (vector<u8>) to hex string for display
-                          verification_id_hex: fields?.verification_id
-                              ? (() => { try { return Buffer.from(fields.verification_id!).toString('hex'); } catch(e) { console.error(`Error parsing verification_id for ${id}`, e); return undefined; } })()
-                              : undefined,
-                          issuedTimestamp: fields?.issuance_timestamp_ms ? parseInt(fields.issuance_timestamp_ms, 10) : undefined,
-
-                          // Attributes might be derived or added later if needed
-                          attributes: [], // Placeholder
-                      }
-                 };
-                 processedNfts.push(nftData);
-
-             } catch (parseError: unknown) {
-                 console.error(`Error processing NFT data for object ${id}:`, parseError, objectInfo.data);
-             }
+            } catch (parseError: unknown) {
+                console.error(`Error processing object data for ${id}:`, parseError, objectInfo.data);
+            }
         }
 
         console.log("Processed NFTs:", processedNfts);
+        console.log("Processed Certificates:", processedCertificates);
         setOwnedNfts(processedNfts);
+        setOwnedCertificates(processedCertificates); // Set certificate state
         setIsLoading(false);
 
-    // Depends on client, account, and crucially the display data and type definition
-    }, [client, account, fetchObjectsBatch, collectionDisplayData, carbonNftType]);
+    // Dependencies: Now only depends on client, account, and fetchObjectsBatch callback
+    // collectionDisplayData dependency removed as it's checked inside the loop
+    }, [client, account, fetchObjectsBatch, nftPackageId]); // Added nftPackageId dependency
 
     // UseEffect to fetch owned NFTs on mount and when dependencies change
     useEffect(() => {
@@ -585,60 +621,87 @@ export default function MyAssetsPage() {
         </Card>
     );
 
+    // --- NEW: Function to render a Retirement Certificate Card ---
+    const renderCertificateCard = (cert: OwnedCertificateDisplayData) => (
+        <Card key={cert.id} className="flex flex-col bg-slate-100 dark:bg-slate-800 border-slate-300 dark:border-slate-700">
+            <CardHeader>
+                <CardTitle className="truncate text-slate-700 dark:text-slate-300" title={`Certificate ${cert.id}`}>
+                    Retirement Certificate
+                </CardTitle>
+                <CardDescription className="truncate text-xs" title={cert.id}>
+                     Cert ID: {cert.id.substring(0, 6)}...{cert.id.substring(cert.id.length - 4)}
+                </CardDescription>
+                 <CardDescription className="truncate text-xs" title={cert.originalNftId}>
+                     Original NFT ID: {cert.originalNftId ? `${cert.originalNftId.substring(0, 6)}...${cert.originalNftId.substring(cert.originalNftId.length - 4)}` : 'N/A'}
+                </CardDescription>
+            </CardHeader>
+            <CardContent className="flex-grow">
+                {/* No image for certificates, just data */}
+                <div className="mt-1 space-y-1 text-sm text-slate-600 dark:text-slate-400">
+                     {cert.retiredAmountKgCo2e !== undefined && <p><strong>Amount Retired:</strong> {(cert.retiredAmountKgCo2e / 1000).toLocaleString()} kg CO₂e</p>}
+                     {cert.retirementTimestamp !== undefined && <p><strong>Retired On:</strong> {new Date(cert.retirementTimestamp).toLocaleString()}</p>}
+                     {cert.originalVerificationIdHex && <p className="text-xs text-muted-foreground truncate" title={cert.originalVerificationIdHex}><strong>Original Verification:</strong> {cert.originalVerificationIdHex}</p>}
+                     {/* Optionally display retirer address if needed, though it should be the current user */}
+                     {/* {cert.retirerAddress && <p className="text-xs text-muted-foreground truncate" title={cert.retirerAddress}>Retirer: {cert.retirerAddress}</p>} */}
+                 </div>
+            </CardContent>
+             {/* No footer actions needed for certificates */}
+             <CardFooter/>
+        </Card>
+    );
+
     // Main component return
     return (
-        <div className="container mx-auto p-4">
-            <h1 className="text-3xl font-bold mb-6">My Carbon Credit NFTs</h1>
+        <div className="container mx-auto p-4 space-y-8">
+            <div>
+                <h1 className="text-3xl font-bold mb-6">My Carbon Credit NFTs</h1>
 
-            {/* Error Display */}
-            {error && (
-                <div className="mb-4 p-4 bg-red-100 border border-red-400 text-red-700 rounded">
-                    <p><strong>Error:</strong> {error}</p>
-                </div>
-            )}
+                {/* Error Display */}
+                {error && (
+                    <div className="mb-4 p-4 bg-red-100 border border-red-400 text-red-700 rounded">
+                        <p><strong>Error:</strong> {error}</p>
+                    </div>
+                )}
 
-            {/* Loading State */}
-            {isLoading && (
-                 <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                     {[...Array(3)].map((_, i) => (
-                         <Card key={i}>
-                             <CardHeader><Skeleton className="h-6 w-3/4" /></CardHeader>
-                             <CardContent><Skeleton className="h-48 w-full" /></CardContent>
-                             <CardFooter className="flex justify-between">
-                                 <Skeleton className="h-8 w-20" />
-                                 <Skeleton className="h-8 w-20" />
-                             </CardFooter>
-                         </Card>
-                     ))}
-                 </div>
-             )}
-
-            {/* NFT Grid */}
-            {!isLoading && ownedNfts.length > 0 && (
+                {/* NFT Grid */}
                 <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-6">
-                    {ownedNfts.map(renderNftCard)}
-                </div>
-            )}
+                     {isLoading && !error // Show skeletons only during initial load and no error
+                         ? [...Array(4)].map((_, i) => renderSkeletonCard(i))
+                         : ownedNfts.length > 0
+                             ? ownedNfts.map(renderNftCard)
+                             : !isLoading && !error && // Show only if not loading and no error
+                               <p className="col-span-full text-center text-gray-500 mt-8">You do not own any active Carbon Credit NFTs from this collection yet.</p>
+                     }
+                 </div>
+            </div>
 
-            {/* No NFTs Message */}
-            {!isLoading && ownedNfts.length === 0 && !error && (
-                <p className="text-center text-gray-500 mt-8">You do not own any Carbon Credit NFTs from this collection yet.</p>
-            )}
+             {/* --- NEW: Section for Retired Certificates --- */}
+             <hr className="my-8 border-gray-300 dark:border-gray-700"/> {/* Divider */}
+             <div>
+                <h2 className="text-2xl font-bold mb-6">My Retired Certificates</h2>
+                 <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-6">
+                      {isLoading && !error // Show skeletons only during initial load and no error
+                         ? [...Array(4)].map((_, i) => renderSkeletonCard(i)) // Reuse NFT skeleton for now
+                         : ownedCertificates.length > 0
+                             ? ownedCertificates.map(renderCertificateCard)
+                             : !isLoading && !error && // Show only if not loading and no error
+                                <p className="col-span-full text-center text-gray-500 mt-8">You have not retired any Carbon Credit NFTs yet.</p>
+                      }
+                  </div>
+             </div>
 
-
-             {/* Listing Dialog - Use Shadcn Dialog components */}
+             {/* Listing Dialog (keep as is) */}
               {nftToList && nftPackageId && listingRegistryId && (
                  <Dialog open={isListDialogOpen} onOpenChange={setIsListDialogOpen}>
                     <DialogContent>
                          <DialogHeader>
                              <DialogTitle>List NFT for Sale</DialogTitle>
                          </DialogHeader>
-                         {/* Pass necessary props to the inner component */}
                          <ListItemDialog
-                             nft={{ id: nftToList.id, metadata: { name: nftToList.metadata?.name } }} // Pass only needed data
+                             nft={{ id: nftToList.id, metadata: { name: nftToList.metadata?.name } }}
                              onListingComplete={handleListingComplete}
-                             marketplacePackageId={nftPackageId} // Pass the marketplace package ID
-                             listingRegistryId={listingRegistryId} // Pass the Listing Registry ID
+                             marketplacePackageId={nftPackageId} // Use correct variable
+                             listingRegistryId={listingRegistryId}
                          />
                     </DialogContent>
                  </Dialog>

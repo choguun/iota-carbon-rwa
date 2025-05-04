@@ -9,10 +9,6 @@ import {
 } from '@iota/dapp-kit';
 import { Transaction } from '@iota/iota-sdk/transactions';
 import { toast } from "sonner";
-import { useNetworkVariable } from '@/lib/networkConfig'; // Assuming this exists
-// Use string for transaction digests
-// import type { TransactionId } from '@iota/iota-sdk/client';
-// import type { IObjectInfo } from '@iota/sdk'; // Unused
 import { Button } from "@/components/ui/button"; // Add missing import
 
 // --- Data Structures ---

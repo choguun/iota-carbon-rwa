@@ -15,10 +15,9 @@ import Image from "next/image";
 import { Transaction } from '@iota/iota-sdk/transactions';
 import { bcs } from '@iota/iota-sdk/bcs';
 
-const marketplacePackageId = process.env.NEXT_PUBLIC_MARKETPLACE_PACKAGE_ID || 'PLACEHOLDER_MARKETPLACE_PACKAGE_ID';
-const nftPackageId = process.env.NEXT_PUBLIC_PACKAGE_ID || 'PLACEHOLDER_NFT_PACKAGE_ID';
-const listingRegistryId = process.env.NEXT_PUBLIC_LISTING_REGISTRY_ID || 'PLACEHOLDER_REGISTRY_ID';
-const nftDisplayObjectId = process.env.NEXT_PUBLIC_DISPLAY_OBJECT_ID || 'PLACEHOLDER_NFT_DISPLAY_ID';
+const marketplacePackageId = process.env.NEXT_PUBLIC_MARKETPLACE_PACKAGE_ID;
+const listingRegistryId = process.env.NEXT_PUBLIC_LISTING_REGISTRY_ID;
+const nftDisplayObjectId = process.env.NEXT_PUBLIC_DISPLAY_OBJECT_ID;
 
 // Placeholder image URLs based on activity type
 const CYCLING_IMAGE_URL = "/images/cycling_placeholder.jpg"; // Replace with actual URL or path
@@ -761,7 +760,7 @@ export default function MarketplacePage() {
                          {listing.fetchError && <p className="text-red-500 text-xs font-semibold mb-2">Error loading listing: {listing.fetchError}</p>}
                          {/* Use optional chaining and check fields */}
                          {listing.nftData?.fields?.amount_kg_co2e !== undefined && <p><strong>Amount:</strong> {(Number(listing.nftData.fields.amount_kg_co2e) / 1000).toLocaleString()} kg CO₂e</p>}
-                         {listing.nftData?.fields?.activity_type !== undefined && <p><strong>Activity Code:</strong> {listing.nftData.fields.activity_type}</p>}
+                         {listing.nftData?.fields?.activity_type !== undefined && <p><strong>Transportation:</strong> {listing.nftData.fields.activity_type === 1 ? 'Cycling' : 'Walking'}</p>}
                          <p><strong>Price:</strong> {priceInIota} IOTA</p>
                          <p className="text-xs text-muted-foreground truncate" title={listing.seller || 'Unknown Seller'}><strong>Seller:</strong> {listing.seller || 'Unknown Seller'}</p>
     </div>

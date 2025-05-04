@@ -16,7 +16,6 @@ import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Loader2, CheckCircle, XCircle, Upload } from "lucide-react";
-import { useNetworkVariable } from '@/lib/networkConfig'; // Assuming this exists
 import Confetti from 'react-confetti';
 
 
@@ -211,6 +210,13 @@ export default function ActionsPage() {
                 <CardHeader>
                     <CardTitle>{title}</CardTitle>
                     <CardDescription>{description}</CardDescription>
+                    <a
+                        href="/images/sample-fitness-screenshot.webp" // <-- IMPORTANT: Update filename/extension if needed
+                        download="sample-fitness-screenshot"   // <-- Suggests filename to browser
+                        className="text-sm text-blue-600 dark:text-blue-400 hover:underline"
+                    >
+                        Download Sample Screenshot
+                    </a>
                     {/* Optional: Keep last recorded timestamp display */}
                     {/* <p className="text-sm text-muted-foreground pt-2">Last recorded: {status.lastRecordedTimestamp > 0 ? new Date(status.lastRecordedTimestamp).toLocaleString() : 'Never'}</p> */}
                 </CardHeader>

@@ -1,5 +1,4 @@
 // Module: carbon_nft_manager
-// Responsible for defining, minting, and managing CarbonCreditNFTs.
 module rwa_platform::carbon_nft_manager {
     use iota::table::{Self, Table};
     use iota::display::{Self};
@@ -22,6 +21,22 @@ module rwa_platform::carbon_nft_manager {
         verification_id: vector<u8>,
         /// Timestamp (Unix milliseconds) when the NFT was minted.
         issuance_timestamp_ms: u64,
+    }
+
+    /// Soulbound Token representing proof of retiring a CarbonCreditNFT.
+    /// Has `key` but lacks `store` to make it non-transferable after minting.
+    public struct RetirementCertificate has key, store {
+        id: UID,
+        /// ID of the original CarbonCreditNFT that was retired.
+        original_nft_id: ID,
+        /// Address of the account that retired the NFT.
+        retirer_address: address,
+        /// Amount from the retired NFT.
+        retired_amount_kg_co2e: u64,
+        /// Verification ID from the retired NFT.
+        original_verification_id: vector<u8>,
+        /// Timestamp (Unix milliseconds) when the retirement occurred.
+        retirement_timestamp_ms: u64,
     }
 
     /// One-time witness for claiming the Publisher object.
@@ -57,6 +72,14 @@ module rwa_platform::carbon_nft_manager {
         verification_id: vector<u8>,
     }
 
+    public struct CertificateMinted has copy, drop, store {
+        certificate_id: ID,
+        retirer_address: address,
+        retired_amount_kg_co2e: u64,
+        original_verification_id: vector<u8>,
+        retirement_timestamp_ms: u64,
+    }
+
     // --- Getter Functions for CarbonCreditNFT ---
 
     /// Returns the amount of CO2e in the NFT.
@@ -74,17 +97,11 @@ module rwa_platform::carbon_nft_manager {
         nft.verification_id
     }
 
-    // --- Error Codes ---
-
     /// Returned if the amount_kg_co2e provided for minting is zero.
     const EInvalidAmount: u64 = 1;
     /// Returned if trying to mint with a verification_id that has already been used.
     const EVerificationIdAlreadyProcessed: u64 = 2;
 
-    // --- Initialization Function ---
-
-    /// Called once during package deployment. Sets up AdminCap and Registry.
-    /// NOTE: Display object must be created in a separate transaction post-deployment
     /// by calling the `create_display` function with the Publisher object.
     fun init(witness: CARBON_NFT_MANAGER, ctx: &mut TxContext) {
         // 1. Claim the Publisher object using the one-time witness
@@ -102,8 +119,6 @@ module rwa_platform::carbon_nft_manager {
         };
         transfer::share_object(verification_registry);
     }
-
-    // --- Display Creation Function ---
 
     /// Creates and shares the Display object for CarbonCreditNFT.
     /// Must be called once by the package publisher after deployment.
@@ -174,9 +189,8 @@ module rwa_platform::carbon_nft_manager {
         transfer::public_transfer(nft, recipient);
     }
 
-    // --- Retirement Function (Phase 3) ---
-
-    /// Retires (burns) a specific CarbonCreditNFT. Called by the NFT owner.
+    /// Retires (burns) a specific CarbonCreditNFT and issues a non-transferable
+    /// RetirementCertificate SBT to the retirer. Called by the NFT owner.
     public entry fun retire_nft(nft: CarbonCreditNFT, ctx: &mut TxContext) {
         // Object 'nft' is passed by value, consuming it.
 
@@ -184,25 +198,55 @@ module rwa_platform::carbon_nft_manager {
         let CarbonCreditNFT {
             id, // The UID struct
             amount_kg_co2e,
-            activity_type: _, // Activity type not needed for event, ignored
-            verification_id,
-            issuance_timestamp_ms: _, // Timestamp not needed for event, ignored
+            activity_type: _, // Activity type not needed for event/cert, ignored
+            verification_id, // Keep this for the certificate
+            issuance_timestamp_ms: _, // Timestamp not needed for event/cert, ignored
         } = nft; // 'nft' is consumed/destroyed here
 
         let nft_id_value = object::uid_to_inner(&id); // Get the ID value from the UID
         let retirer = tx_context::sender(ctx);
 
-        // 2. Emit Retirement Event
+        // 2. Emit Retirement Event (using copied verification_id)
+        // Make sure verification_id is consumed either here or in the certificate. Copy if needed for both.
         event::emit(RetireNFTEvent {
             retirer: retirer,
             nft_id: nft_id_value,
             amount_kg_co2e: amount_kg_co2e,
-            verification_id: verification_id, // verification_id is consumed here
+            verification_id: copy verification_id, // Copy ID for the event
         });
 
         // 3. Object Destruction happens automatically for fields moved out.
-        //    Explicitly delete the remaining UID wrapper.
+        //    Explicitly delete the remaining UID wrapper of the original NFT.
         object::delete(id);
+
+        // ---- Mint the Retirement Certificate SBT ----
+        let retirement_timestamp = tx_context::epoch_timestamp_ms(ctx);
+        let certificate = RetirementCertificate {
+            id: object::new(ctx), // Create a new UID for the certificate
+            original_nft_id: nft_id_value,
+            retirer_address: retirer,
+            retired_amount_kg_co2e: amount_kg_co2e,
+            original_verification_id: verification_id, // Consume the original verification_id here
+            retirement_timestamp_ms: retirement_timestamp,
+        };
+
+        // Transfer the SBT to the retirer, making it non-transferable (soulbound)
+        event::emit(CertificateMinted {
+            certificate_id: object::id(&certificate),
+            retirer_address: retirer,
+            retired_amount_kg_co2e: amount_kg_co2e,
+            original_verification_id: verification_id,
+            retirement_timestamp_ms: retirement_timestamp 
+        });
+
+        transfer::transfer(certificate, retirer);
+    }
+
+    /// Function the *owner* of a certificate would call to freeze it.
+    /// Takes ownership of the certificate object from the sender.
+    public entry fun freeze_my_certificate(certificate: RetirementCertificate, _ctx: &mut TxContext) {
+        // The transaction sender must own the 'certificate' object being passed in.
+        transfer::freeze_object(certificate);
     }
 
     #[test_only]

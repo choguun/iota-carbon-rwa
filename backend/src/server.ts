@@ -3,32 +3,23 @@ import dotenv from 'dotenv';
 import cors from 'cors';
 import OpenAI from 'openai';
 import crypto from 'crypto';
-// Base client from @iota/sdk
-// import { initLogger, Utils } from '@iota/sdk'; // Keep Utils for now
-// IotaClient for network interactions
+
 import { IotaClient, getFullnodeUrl } from '@iota/iota-sdk/client';
-// Higher-level wallet, account, transaction builders from @iota/iota-sdk
 import { Transaction } from '@iota/iota-sdk/transactions';
-// Keypair
 import { Ed25519Keypair } from '@iota/iota-sdk/keypairs/ed25519';
-// BCS for serialization
 import { bcs } from '@iota/iota-sdk/bcs';
-// import { toHEX, toB64 } from '@iota/iota-sdk/utils'; // toHEX not needed here
 import { Buffer } from 'buffer';
 
-// --- Interfaces & Storage ---
 interface VisionVerificationResult {
     activityType?: string; // e.g., "cycling", "walking", "other"
     distanceKm?: number;
     date?: string; // e.g., "YYYY-MM-DD"
     error?: string; // Error message from AI parsing
-  }
+}
 
 dotenv.config();
 
 const openaiApiKey = process.env.OPENAI_API_KEY;
-
-// Load IOTA config
 const iotaNodeUrl = process.env.IOTA_NODE_URL;
 const iotaPackageId = process.env.IOTA_PACKAGE_ID;
 const iotaAdminCapId = process.env.IOTA_ADMIN_CAP_ID;
@@ -42,10 +33,11 @@ if (!iotaAdminCapId) throw new Error("IOTA_ADMIN_CAP_ID is not set in .env");
 if (!iotaVerificationRegistryId) throw new Error("IOTA_VERIFICATION_REGISTRY_ID is not set in .env");
 if (!iotaDeployerPrivateKey) throw new Error("IOTA_DEPLOYER_PRIVATE_KEY is not set in .env");
 
+console.log("iotaPackageId: ", iotaPackageId);
+
 // --- Constants ---
 const EXPECTED_ACTION_TYPE_TRANSPORT = "SUSTAINABLE_TRANSPORT_KM";
 
-// TODO: Define these more formally, matching the Move contract
 const ACTIVITY_CODE_CYCLING = 1;
 const ACTIVITY_CODE_WALKING = 2;
 const EMISSION_FACTOR_CYCLING_PER_KM = 0.015; // Example kg CO2e per km
@@ -54,9 +46,6 @@ const EMISSION_FACTOR_WALKING_PER_KM = 0.020; // Example kg CO2e per km
 const openai = new OpenAI({
     apiKey: openaiApiKey,
 });
-
-// Simple delay function
-const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 // Define asyncHandler before use
 const asyncHandler = (fn: (req: Request, res: Response, next: NextFunction) => Promise<any>) => 
@@ -75,7 +64,7 @@ async function verifyTransportWithVision(base64Image: string): Promise<{ success
     try {
         const completion = await openai.chat.completions.create({
             model: "gpt-4o",
-            max_tokens: 300,
+            max_tokens: 3000,
             messages: [
                 // --- System Prompt --- 
                 {

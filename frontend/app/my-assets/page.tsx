@@ -26,8 +26,7 @@ import { Transaction } from '@iota/iota-sdk/transactions'; // Import Transaction
 import { Buffer } from 'buffer'; // Import Buffer for hex conversion
 
 // Assuming network variables are loaded correctly (e.g., from .env.local)
-const nftPackageId = process.env.NEXT_PUBLIC_PACKAGE_ID || 'PLACEHOLDER_NFT_PACKAGE_ID';
-const marketplacePackageId = process.env.NEXT_PUBLIC_MARKETPLACE_PACKAGE_ID || 'PLACEHOLDER_MARKETPLACE_PACKAGE_ID';
+const nftPackageId = process.env.NEXT_PUBLIC_PACKAGE_ID;
 const displayObjectId = process.env.NEXT_PUBLIC_DISPLAY_OBJECT_ID; // Required!
 const listingRegistryId = process.env.NEXT_PUBLIC_LISTING_REGISTRY_ID; // Read registry ID
 

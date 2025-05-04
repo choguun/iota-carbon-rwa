@@ -15,9 +15,9 @@ import Image from "next/image";
 import { Transaction } from '@iota/iota-sdk/transactions';
 import { bcs } from '@iota/iota-sdk/bcs';
 
-const marketplacePackageId = process.env.NEXT_PUBLIC_MARKETPLACE_PACKAGE_ID;
-const listingRegistryId = process.env.NEXT_PUBLIC_LISTING_REGISTRY_ID;
-const nftDisplayObjectId = process.env.NEXT_PUBLIC_DISPLAY_OBJECT_ID;
+const marketplacePackageId = process.env.NEXT_PUBLIC_MARKETPLACE_PACKAGE_ID as string;
+const listingRegistryId = process.env.NEXT_PUBLIC_LISTING_REGISTRY_ID as string;
+const nftDisplayObjectId = process.env.NEXT_PUBLIC_DISPLAY_OBJECT_ID as string;
 
 // Placeholder image URLs based on activity type
 const CYCLING_IMAGE_URL = "/images/cycling_placeholder.jpg"; // Replace with actual URL or path

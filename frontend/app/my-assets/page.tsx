@@ -392,7 +392,7 @@ export default function MyAssetsPage() {
 
     // Dependencies: Now only depends on client, account, and fetchObjectsBatch callback
     // collectionDisplayData dependency removed as it's checked inside the loop
-    }, [client, account, fetchObjectsBatch, nftPackageId]); // Added nftPackageId dependency
+    }, [client, account, fetchObjectsBatch, nftPackageId, collectionDisplayData]); // Added nftPackageId dependency
 
     // UseEffect to fetch owned NFTs on mount and when dependencies change
     useEffect(() => {

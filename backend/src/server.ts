@@ -209,7 +209,7 @@ app.post('/request-attestation', asyncHandler(async (req: Request, res: Response
             default:
                 // Should not happen if visionResult.success is true, but handle defensively
                 console.error(`Unsupported activity type from vision: ${activityTypeString}`);
-                return res.status(400).json({ error: `Unsupported activity type for minting: ${activityTypeString}` });
+                return res.status(400).json({ error: `Unsupported activity type for minting: ${activityTypeString}. Only cycling and walking are supported.` });
         }
 
         // Calculate CO2e amount (convert kg to grams or chosen unit for u64)

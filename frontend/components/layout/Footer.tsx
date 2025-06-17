@@ -8,7 +8,7 @@ const Footer = () => {
                 Built for the Moveathon.
                 {' '}
                 <a
-                    href="#" // Add link to project repo later
+                    href="https://github.com/choguun/iota-carbon-rwa" // Add link to project repo later
                     target="_blank"
                     rel="noreferrer"
                     className="font-medium underline underline-offset-4"
